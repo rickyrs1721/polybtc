@@ -1,0 +1,36 @@
+{
+    "permissions": {
+        "defaultMode": "acceptEdits",
+        "deny": [
+            "Read(./.env)",
+            "Read(./.env.local)",
+            "Read(./.env.paper)",
+            "Read(./.env.live)",
+            "Read(./.env.*.local)",
+            "Read(./**/*.key)",
+            "Read(~/.polybtc/**)",
+            "Bash(rm -rf:*)",
+            "Bash(git push --force:*)"
+        ],
+        "ask": [
+            "Bash(git push:*)",
+            "Bash(uv run polybtc:*)",
+            "Bash(uv publish:*)",
+            "WebFetch"
+        ],
+        "allow": [
+            "Read(./**)",
+            "Bash(uv sync:*)",
+            "Bash(uv add:*)",
+            "Bash(uv run pytest:*)",
+            "Bash(uv run ruff:*)",
+            "Bash(uv run mypy:*)",
+            "Bash(git status)",
+            "Bash(git diff:*)",
+            "Bash(git log:*)",
+            "Bash(git add:*)",
+            "Bash(git commit:*)",
+            "WebFetch(domain:docs.polymarket.com)"
+        ]
+    }
+}

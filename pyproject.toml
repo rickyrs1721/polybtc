@@ -1,0 +1,92 @@
+[project]
+name = "polybtc"
+version = "0.1.0"
+description = "Bot maker-only sobre mercados cripto de corto plazo de Polymarket (CLOB V2)"
+readme = "README.md"
+requires-python = ">=3.12"
+# Las dependencias de runtime (polymarket-client, pydantic-settings, websockets,
+# pyarrow...) se añaden con `uv add` cuando empiece la implementación de cada módulo.
+# No se pinnean aquí a ciegas: §1 exige verificar el SDK y las direcciones V2 antes de usarlos.
+dependencies = []
+
+[project.scripts]
+polybtc = "polybtc.main:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "gitleaks-py>=0.3.1",
+    "pre-commit>=4.6.2",
+    "ruff>=0.14.0",
+    "mypy>=1.18.0",
+    "pytest>=8.4.0",
+    "pytest-asyncio>=1.0.0",
+]
+
+# ---------------------------------------------------------------------------
+# ruff
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "A",    # builtins shadowing
+    "C4",   # comprehensions
+    "DTZ",  # datetimes sin tz: en un bot de horizonte de minutos, un naive datetime es un bug
+    "T20",  # print(): §0 prohíbe imprimir objetos que puedan llevar la llave privada
+    "ASYNC",# antipatrones async
+    "RUF",
+]
+ignore = [
+    # σ, τ y − son la notación del proyecto (§3): no son homoglifos accidentales.
+    "RUF002",  # unicode ambiguo en docstrings
+    "RUF003",  # unicode ambiguo en comentarios
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/polybtc/research/*" = ["T20"]  # los notebooks de Fase 0 sí imprimen
+"tests/*" = ["T20"]
+
+[tool.ruff.format]
+docstring-code-format = true
+# CLAUDE.md es documentación con bloques de código alineados a mano: no lo reformatees.
+exclude = ["*.md"]
+
+# ---------------------------------------------------------------------------
+# mypy --strict
+# ---------------------------------------------------------------------------
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src", "tests"]
+strict = true
+warn_unreachable = true
+warn_no_return = true
+no_implicit_reexport = true
+show_error_codes = true
+pretty = true
+# §9: sin excepciones en módulos que tocan dinero. Si un stub de terceros falta,
+# se ignora ese paquete aquí de forma explícita y nominal, nunca con un `# type: ignore` suelto.
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q --strict-markers"
