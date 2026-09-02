@@ -137,17 +137,25 @@ Competir por microsegundos contra mesas colocalizadas es una batalla perdida. El
 buscado aquí es **modelo + gestión de inventario**, no velocidad.
 
 **Diagnóstico obligatorio antes de elegir horizonte** (`model/binary.py::delta_per_dollar`):
-cuánto se mueve el fair si BTC se mueve $1. En un Up/Down ATM con σ=60%:
+cuánto se mueve el fair si BTC se mueve $1. En un Up/Down ATM con σ=60%, S=100 000 y
+ventana TWAP de 30 s:
 
 | τ restante | Δ fair por $1 | ticks (0.001) por $10 de BTC |
 | ---------- | ------------- | ---------------------------- |
 | 300 s      | 0.00223       | 22                           |
 | 60 s       | 0.00590       | 59                           |
-| 10 s       | 0.02044       | **204**                      |
+| 10 s       | 0.06135       | **614**                      |
 
 La gamma de un digital ATM explota contra el vencimiento. **Los últimos ~30 segundos son
 territorio de latencia pura y ahí se pierde por construcción.** Ese número, no la
 intuición, decide en qué épocas cotizamos.
+
+> **La fila de 10 s decía 0.02044 (204 ticks). Es incorrecta**: son exactamente 3× menos
+> de lo que da la fórmula de §3.2, equivalente a haber usado w=10 en vez de w=30 (la
+> varianza sale 9× menor). Las filas de 300 s y 60 s sí se reproducen exactas. La
+> conclusión de esta sección no cambia — se refuerza: a 10 s del cierre la gamma es el
+> **triple** de lo que este documento afirmaba. Verificado contra
+> `model/binary.py::delta_per_dollar`, cuyos valores ancla `tests/test_model.py`.
 
 ---
 
@@ -273,10 +281,23 @@ es lo que atrapa los errores de signo y de unidades:
 - `var(TWAP) < var(puntual)` al mismo horizonte.
 - Continuidad de la varianza en `τ = w`.
 - `S_eff` con ventana a mitad y `media_observada` conocida da la media ponderada exacta.
-- La banda de incertidumbre encoge hacia 0.50, nunca lo contrario.
+- La banda de incertidumbre encoge hacia 0.50 **lejos del dinero**, y cerca del dinero no
+  se aleja más de 1¢ (ver el matiz de abajo).
 - `delta_per_dollar` crece al acercarse el vencimiento.
 - Cordura de unidades (§3.0).
 - El estimador de σ recupera una vol conocida inyectada por simulación.
+
+> **Matiz sobre la banda (§3.4).** Este documento pedía «encoge hacia 0.50, nunca lo
+> contrario». Con el promedio correcto `E_σ[N(d2(σ))]` eso es **falso cerca del dinero**:
+> `d2 ∝ 1/σ` es convexa, así que promediar sobre σ *aleja* ligeramente el fair de 0.50.
+> Medido con banda de ±30%: como máximo **0.53¢** (τ=300 s, w=30 s, σ=60%, S−K=−$50).
+> Lejos del dinero sí encoge, que es donde §3.4 lo quería. Promediar uniforme en `1/σ`
+> en vez de en `σ` empeora el efecto a 1.93¢, así que la rejilla es uniforme en `σ`.
+>
+> No se "arregla" con un factor de encogimiento ad-hoc: 0.53¢ está muy por debajo del
+> colchón de modelo de 3¢ de §3.5, y falsear el promedio para cumplir una propiedad mal
+> enunciada es peor que documentar el efecto. El test lo mantiene acotado por debajo de
+> 1¢: si crece, es que la banda dejó de ser un promedio sobre σ.
 
 ---
 
@@ -535,3 +556,13 @@ Marcar cuando se resuelvan. No implementar asumiendo una respuesta.
 | 6 | Fase 0: preguntas 5 y 6 (basis, franja de τ) | Sin ellas, la pregunta (2) es interpretable |
 | 7 | Matiz sobre `warproxxx/poly-maker` | Fair value endógeno; la arquitectura sí transfiere |
 | 8 | Añadidas: ventana TWAP, empate, orden de wallet | Cada una cambia el modelo o bloquea `execution/` |
+
+### v2.1 — al implementar `model/` (septiembre 2026)
+
+Dos números de la v2 que no sobrevivieron al contacto con su propia implementación. Los
+detectaron los tests de §3.6, que es exactamente para lo que están.
+
+| § | Cambio | Motivo |
+| --- | --- | --- |
+| 2.3 | Fila τ=10 s: `0.02044` (204 ticks) → `0.06135` (**614**) | 3× de error, como usar w=10 en vez de w=30. Refuerza la conclusión: la gamma a 10 s es el triple de lo documentado |
+| 3.6 | Propiedad de la banda: «nunca lo contrario» → encoge lejos del dinero, acotada en 1¢ cerca | `d2 ∝ 1/σ` es convexa: promediar sobre σ aleja el fair de 0.50 cerca del dinero. Medido: 0.53¢ máx. |
