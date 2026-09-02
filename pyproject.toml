@@ -7,7 +7,10 @@ requires-python = ">=3.12"
 # Las dependencias de runtime (polymarket-client, pydantic-settings, websockets,
 # pyarrow...) se añaden con `uv add` cuando empiece la implementación de cada módulo.
 # No se pinnean aquí a ciegas: §1 exige verificar el SDK y las direcciones V2 antes de usarlos.
-dependencies = []
+dependencies = [
+    "pydantic-settings>=2.15.0",
+    "websockets>=17.1",
+]
 
 [project.scripts]
 polybtc = "polybtc.main:main"
@@ -61,6 +64,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "src/polybtc/research/*" = ["T20"]  # los notebooks de Fase 0 sí imprimen
 "tests/*" = ["T20"]
+"scripts/*" = ["T20"]  # tail_feeds.py es una herramienta de consola: imprimir es su trabajo
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -73,7 +77,7 @@ exclude = ["*.md"]
 
 [tool.mypy]
 python_version = "3.12"
-files = ["src", "tests"]
+files = ["src", "tests", "scripts"]
 strict = true
 warn_unreachable = true
 warn_no_return = true

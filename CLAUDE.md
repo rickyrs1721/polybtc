@@ -70,6 +70,27 @@ Notas operativas: RTDS necesita un frame de texto `PING` cada 5 s si te conectas
 No hay snapshot ni replay tras una desconexión. `payload.value` es `Decimal` exacto —
 **nunca** lo pases a `float` en la ruta de ejecución (ver §4 para la frontera exacta).
 
+> **Si te conectas directo, NO envíes `filters` en la suscripción.** La documentación
+> presenta ese campo como el modo de elegir símbolo; en la práctica es lo que apaga el
+> stream. Medido contra el servidor el 2026-09-02, mismo tópico, misma conexión:
+>
+> | `filters`                        | Acuse | Updates en vivo        |
+> | -------------------------------- | ----- | ---------------------- |
+> | `"btcusdt,ethusdt"` (lo que dice la doc) | no    | ninguno         |
+> | `"{\"symbol\":\"btcusdt\"}"`     | sí    | ~ninguno, intermitente |
+> | campo ausente                    | sí    | ~1/s, sostenido        |
+>
+> Sin `filters` llegan todos los símbolos y se descartan en cliente por `payload.symbol`.
+> Es lo que hace el SDK oficial. **El fallo no da error**: la suscripción se acusa y el
+> feed se queda permanentemente stale, que es indistinguible de un problema de red.
+>
+> Dos consecuencias más, verificadas el mismo día: `crypto_prices_chainlink` puede
+> responder bajo el tópico `crypto_prices` —el mismo que el relay de Binance—, así que hay
+> que enrutar por tópico **y** símbolo; y al suscribirse llega un `type: "subscribe"` con
+> `payload.data`, un backfill a 1 s que la doc no describe y que sirve para arrancar con un
+> valor bueno. Ante cualquier duda futura sobre el formato de un mensaje, **inspecciona el
+> tráfico del SDK oficial**: es el único contraste fiable contra la doc.
+
 **Binance/Coinbase sigue siendo útil, pero en otro rol**: como *indicador adelantado*.
 El TWAP es un promedio rezagado del spot, así que conocer el spot te permite proyectar
 hacia dónde va el TWAP. Es una entrada del modelo, no el ancla.
@@ -313,8 +334,15 @@ polybtc/
 │   ├── feeds/
 │   │   ├── rtds.py              # TWAP Chainlink 30s/60s  ← ANCLA DE LIQUIDACIÓN
 │   │   ├── spot.py              # Binance/Coinbase WS     ← indicador adelantado
-│   │   └── book.py              # MarketSpec: book, price_change, best_bid_ask,
-│   │                            #   tick_size_change (¡el tick size cambia en vivo!)
+│   │   ├── book.py              # MarketSpec: book, price_change, best_bid_ask,
+│   │   │                        #   tick_size_change (¡el tick size cambia en vivo!)
+│   │   ├── state.py             # FeedState: último valor, EDAD y reconexiones por feed.
+│   │   │                        #   La edad es dato de primera clase: es lo que hace
+│   │   │                        #   comprobable el halt por staleness de §5.2.
+│   │   ├── ws.py                # bucle de conexión común: reconexión, backoff con
+│   │   │                        #   jitter y el PING de TEXTO (≠ ping del protocolo WS)
+│   │   └── parsing.py           # json.loads(parse_float=Decimal): es lo que hace que
+│   │                            #   la regla Decimal de §4 se cumpla desde el primer byte
 │   ├── model/
 │   │   ├── vol.py               # EWMA sobre rejilla 1s, piso/techo, banda
 │   │   ├── basis.py             # ← NUEVO: EWMA log(chainlink/binance)
@@ -333,6 +361,9 @@ polybtc/
 │   │   └── sim.py               # fills simulados contra el book real
 │   ├── research/                # notebooks de análisis de Fase 0
 │   └── main.py
+├── scripts/
+│   └── tail_feeds.py            # una línea/s con precios, basis y edad de cada feed.
+│                                #   Es donde se hace la prueba del corte de red.
 └── tests/
 ```
 
@@ -566,3 +597,16 @@ detectaron los tests de §3.6, que es exactamente para lo que están.
 | --- | --- | --- |
 | 2.3 | Fila τ=10 s: `0.02044` (204 ticks) → `0.06135` (**614**) | 3× de error, como usar w=10 en vez de w=30. Refuerza la conclusión: la gamma a 10 s es el triple de lo documentado |
 | 3.6 | Propiedad de la banda: «nunca lo contrario» → encoge lejos del dinero, acotada en 1¢ cerca | `d2 ∝ 1/σ` es convexa: promediar sobre σ aleja el fair de 0.50 cerca del dinero. Medido: 0.53¢ máx. |
+
+### v2.2 — al implementar `feeds/` (septiembre 2026)
+
+La documentación de RTDS describe una suscripción que el servidor acepta y que después no
+emite nada. Los tres desvíos se descubrieron contrastando el tráfico del SDK oficial, y
+los tres fallan **en silencio**: no hay error, solo un feed que nunca se actualiza.
+
+| § | Cambio | Motivo |
+| --- | --- | --- |
+| 2.1 | **Nuevo**: no enviar `filters` en la suscripción directa a RTDS | Con `filters` la suscripción se acusa y no llega ni un update; sin él, ~1/s sostenido |
+| 2.1 | **Nuevo**: enrutar por tópico **y** `payload.symbol` | `crypto_prices_chainlink` puede responder bajo `crypto_prices`; confundirlos deja el basis de §2.1.b en 1 y devuelve el sesgo entero sin síntoma |
+| 2.1 | **Nuevo**: existe un backfill `type: "subscribe"` con `payload.data` | No documentado; permite arrancar con un valor bueno en vez de esperar al primer update |
+| 4 | Árbol: añadidos `feeds/state.py`, `feeds/ws.py`, `feeds/parsing.py` y `scripts/` | Sin estar en el árbol, una sesión futura los trataría como código huérfano |
