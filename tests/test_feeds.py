@@ -519,7 +519,7 @@ async def test_el_feed_se_recupera_solo_de_una_caida() -> None:
 
     state = FeedState(staleness_s=3.0)
     async with serve(handler, "127.0.0.1", 0) as server:
-        port = server.sockets[0].getsockname()[1]
+        port = next(iter(server.sockets)).getsockname()[1]
         task = asyncio.create_task(
             run_feed_forever(
                 name="prueba",
@@ -553,7 +553,7 @@ async def test_cancelar_la_tarea_para_el_feed() -> None:
 
     state = FeedState()
     async with serve(handler, "127.0.0.1", 0) as server:
-        port = server.sockets[0].getsockname()[1]
+        port = next(iter(server.sockets)).getsockname()[1]
         task = asyncio.create_task(
             run_feed_forever(
                 name="prueba",

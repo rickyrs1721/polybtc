@@ -121,6 +121,37 @@ Cross-check gratis: RTDS también retransmite Binance (`crypto_prices`, `btcusdt
 misma conexión. Si tu Binance directo y el Binance relayado divergen, el problema es tu
 red, no una oportunidad.
 
+#### 2.1.c Línea base medida del basis (2026-09-08)
+
+«Decenas de dólares» ya no es una estimación: está medido sobre una hora continua de feeds
+(3.548 muestras, `data/fase0-baseline/`). Estos números son la referencia contra la que se
+juzgará la pregunta 5 de la Fase 0 y, por tanto, la fila 0 del go/no-go de §6.
+
+| Escala | Observado |
+| --- | --- |
+| Dentro de una hora | media **−$14,32**, desviación **$0,82**, rango **$2,90** |
+| Deriva dentro de esa hora | −12,9 → −15,3 → −13,4 (suave, la sigue una half-life de 10 min) |
+| **Entre días** | **−$28,6 (07-sep) → −$14,3 (08-sep)** |
+
+Lo que hay que leer aquí son las dos últimas filas juntas. **Dentro de la hora el basis es
+estable y el estimador lo sigue sin problema. Entre días el nivel se movió $14**, así que
+no existe un basis «del par BTC» que puedas calibrar una vez y reutilizar: hay que
+estimarlo en vivo, siempre, y no cotizar hasta que haya convergido (§5.2).
+
+Traducido a lo único que importa, céntimos de fair (σ=60%, w=60 s, con
+`model/binary.py::delta_per_dollar`):
+
+| | τ=300 s | τ=60 s |
+| --- | --- | --- |
+| Basis SIN corregir ($14,3) | 4,21¢ | 15,17¢ |
+| Residuo tras corregir ($2,9) | 0,85¢ | 3,08¢ |
+
+Sin corregir, el basis **por sí solo** fabrica una señal de 4 a 15¢ contra un umbral de
+decisión de 3¢: es decir, fabrica exactamente la conclusión «hay edge» que haría gastar el
+capital. Corregido, el residuo se queda por debajo del colchón salvo cerca del vencimiento,
+donde vuelve a superarlo — otra razón, independiente de la gamma de §2.3, para no cotizar
+en los últimos segundos.
+
 ### 2.2 Las comisiones obligan a ser maker
 
 ```
@@ -365,8 +396,11 @@ polybtc/
 │   ├── research/                # notebooks de análisis de Fase 0
 │   └── main.py
 ├── scripts/
-│   └── tail_feeds.py            # una línea/s con precios, basis y edad de cada feed.
-│                                #   Es donde se hace la prueba del corte de red.
+│   ├── tail_feeds.py            # una línea/s con precios, basis y edad de cada feed.
+│   │                            #   Es donde se hace la prueba del corte de red.
+│   └── find_market.py           # descubre el mercado de la época vigente y sus token ids.
+│                                #   Imprescindible: los token ids rotan (§8.1)
+├── data/                        # NO versionado. Parquet de la Fase 0 y línea base de feeds
 └── tests/
 ```
 
@@ -659,3 +693,6 @@ Lo que apareció al conectar contra el servidor real y al dejar el proceso una h
 | 8 | Cerradas: tipo de mercado (up/down desde el open) y empate (`>=`, resuelve "Up") | Verificadas en la descripción del mercado |
 | 8 | La ventana TWAP queda abierta **con el experimento que la decide escrito** | La descripción dice «TWAP del rango» y cita el stream de 60 s; hay un factor 15 en `delta_per_dollar` entre ambas lecturas |
 | 8.1 | **Nuevo**: hechos medidos del mercado objetivo | Tick 0.01 (no 0.001), y los token ids rotan por época con un hueco de ~2 min sin mercado |
+| 2.1.c | **Nuevo**: línea base medida del basis | «Decenas de dólares» pasa a ser un número: $0,82 de desviación dentro de la hora, pero $14 de movimiento del nivel entre días |
+| 1 | `polymarket-client` entra como dependencia, y pinnea `websockets>=13,<16` | §2.1 obliga a contrastar la doc contra el tráfico del SDK; esa regla es inservible si no está instalado |
+| 4 | Árbol: añadidos `scripts/find_market.py` y `data/` | El descubrimiento de mercado es un componente, no un apaño de sesión |

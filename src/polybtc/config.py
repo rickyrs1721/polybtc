@@ -53,11 +53,19 @@ class Settings(BaseSettings):
     """Únicos valores admitidos por RTDS. Cuál se usa para cotizar es decisión de §8."""
 
     # -- Book -----------------------------------------------------------------------
-    token_ids: tuple[str, ...] = ()
-    """Outcome token ids del mercado seguido.
+    market_slug_prefix: str = "btc-updown-15m"
+    """Familia de mercados objetivo (§8). Existe también `btc-updown-5m`.
 
-    Vacío a propósito: el mercado objetivo es una decisión abierta de §8 y no se asume.
-    Se rellena por entorno (`POLYBTC_TOKEN_IDS`) cuando esa decisión esté cerrada.
+    Es un PREFIJO, no un slug: cada época crea su propio mercado con el epoch al final.
+    """
+
+    token_ids: tuple[str, ...] = ()
+    """Outcome token ids del mercado seguido, en orden `(Up, Down)`.
+
+    Vacío a propósito, y **no es algo que deba rellenarse a mano de forma permanente**:
+    los token ids rotan con cada época (§8.1). Sirve para diagnóstico puntual vía
+    `POLYBTC_TOKEN_IDS`; un proceso de larga duración tiene que descubrir el mercado de la
+    época vigente, no leerlo de aquí.
     """
 
     # -- Salud de los feeds (§5.2) ---------------------------------------------------

@@ -8,8 +8,9 @@ requires-python = ">=3.12"
 # pyarrow...) se añaden con `uv add` cuando empiece la implementación de cada módulo.
 # No se pinnean aquí a ciegas: §1 exige verificar el SDK y las direcciones V2 antes de usarlos.
 dependencies = [
+    "polymarket-client>=0.9.0",
     "pydantic-settings>=2.15.0",
-    "websockets>=17.1",
+    "websockets>=15,<16",
 ]
 
 [project.scripts]
