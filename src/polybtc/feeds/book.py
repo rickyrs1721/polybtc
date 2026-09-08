@@ -96,44 +96,61 @@ async def run(state: FeedState, settings: Settings) -> None:
 
 
 def _handle_event(event: dict[str, Any], state: FeedState) -> None:
+    """Todos los caminos exigen `asset_id`: sin él no se sabe de qué outcome se habla.
+
+    Un mercado binario son DOS libros. Mezclarlos no da error, da precios complementarios
+    alternando en la misma casilla — verificado en vivo antes de indexar por `asset_id`.
+    """
     event_type = event.get("event_type")
 
     if event_type == EVENT_BOOK:
+        asset_id = _asset_id(event)
         quote = top_of_book(event)
-        if quote is not None:
-            state.set_book(quote)
+        if asset_id and quote is not None:
+            state.set_book(asset_id, quote)
 
     elif event_type == EVENT_BEST_BID_ASK:
+        asset_id = _asset_id(event)
         quote = _quote_from(event.get("best_bid"), event.get("best_ask"))
-        if quote is not None:
-            state.set_book(quote)
+        if asset_id and quote is not None:
+            state.set_book(asset_id, quote)
 
     elif event_type == EVENT_PRICE_CHANGE:
         _handle_price_change(event, state)
 
     elif event_type == EVENT_TICK_SIZE_CHANGE:
+        asset_id = _asset_id(event)
         tick = as_decimal(event.get("new_tick_size"))
-        if tick is not None and tick > 0:
+        if asset_id and tick is not None and tick > 0:
             # §4: se REEMPLAZA el valor guardado. El CLOB rechaza órdenes cuantizadas con
             # un tick obsoleto, y el rechazo no es descriptivo.
-            state.set_tick_size(tick)
+            state.set_tick_size(asset_id, tick)
 
 
 def _handle_price_change(event: dict[str, Any], state: FeedState) -> None:
     """`price_change` trae `best_bid`/`best_ask` ya calculados en cada entrada.
 
-    Se toma la última entrada válida del array: son deltas en orden, y la posterior manda.
+    El array puede mezclar entradas de varios `asset_id`. Se agrupa por token y se aplica
+    la última de cada uno: son deltas en orden, y la posterior manda.
     """
     changes = event.get("price_changes")
     if not isinstance(changes, list):
         return
-    for change in reversed(changes):
+    latest: dict[str, Quote] = {}
+    for change in changes:
         if not isinstance(change, dict):
             continue
+        asset_id = _asset_id(change)
         quote = _quote_from(change.get("best_bid"), change.get("best_ask"))
-        if quote is not None:
-            state.set_book(quote)
-            return
+        if asset_id and quote is not None:
+            latest[asset_id] = quote
+    for asset_id, quote in latest.items():
+        state.set_book(asset_id, quote)
+
+
+def _asset_id(event: dict[str, Any]) -> str | None:
+    value = event.get("asset_id")
+    return value if isinstance(value, str) and value else None
 
 
 def top_of_book(snapshot: dict[str, Any]) -> Quote | None:

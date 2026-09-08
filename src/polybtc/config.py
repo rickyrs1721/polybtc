@@ -70,12 +70,18 @@ class Settings(BaseSettings):
     ws_backoff_base_s: float = 0.5
     ws_backoff_max_s: float = 30.0
     ws_open_timeout_s: float = 10.0
-    ws_recv_timeout_s: float = 30.0
+    ws_recv_timeout_s: float = 10.0
     """Sin mensajes durante este tiempo se considera conexión muerta y se reconecta.
 
     RTDS no tiene replay ni snapshot tras una desconexión (§2.1): colgarse de un socket
     silencioso es peor que reconectar, porque la edad del feed se dispara sin que nadie
     lo note.
+
+    Bajado de 30 s tras la corrida de una hora del 2026-09-08. **RTDS se queda mudo sin
+    cerrar la conexión**: hubo un episodio en el que dejó de emitir y solo este timeout lo
+    detectó, con 33 s de ceguera. Sin `filters` llegan todos los símbolos, del orden de
+    decenas de mensajes por segundo, así que 10 s de silencio ya es un orden de magnitud
+    por encima de lo normal y no genera reconexiones espurias.
     """
 
     # -- Modelo: basis (§2.1.b) ------------------------------------------------------
@@ -90,5 +96,10 @@ class Settings(BaseSettings):
     vol_ceiling_annual: float = 3.00
 
     # -- Ejecución ------------------------------------------------------------------
-    default_tick_size: Decimal = Field(default=Decimal("0.001"))
-    """Solo un arranque razonable: el tick real llega por `tick_size_change` en vivo (§4)."""
+    default_tick_size: Decimal = Field(default=Decimal("0.01"))
+    """Arranque; el tick real llega por `tick_size_change` en vivo (§4).
+
+    `0.01` es el `minimum_tick_size` observado en la familia `btc-updown-15m` el
+    2026-09-08, no un valor de catálogo. Ojo: la tabla de §2.3 está expresada en ticks de
+    `0.001`, así que sobre este mercado sus cifras de ticks se dividen por diez.
+    """

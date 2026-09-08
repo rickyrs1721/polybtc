@@ -20,7 +20,22 @@ FEED_TWAP30 = "twap30"
 FEED_TWAP60 = "twap60"
 FEED_BINANCE_RELAY = "binance_relay"
 FEED_BINANCE_DIRECT = "binance_direct"
+FEED_BOOK_PREFIX = "book:"
+
+
+def book_feed(asset_id: str) -> str:
+    """Clave de staleness del book de UN outcome.
+
+    Cada outcome de la binaria es un instrumento con su propio libro. Meterlos en una sola
+    casilla mezcla precios complementarios —medido en vivo: `0.02/0.03` del "Down"
+    alternando con `0.97/0.98` del "Up" en la misma línea— y el consumidor no tiene forma
+    de notar que está leyendo el instrumento equivocado.
+    """
+    return f"{FEED_BOOK_PREFIX}{asset_id}"
+
+
 FEED_BOOK = "book"
+"""Solo para listados legibles. La clave real de cada libro la da `book_feed`."""
 
 ALL_FEEDS: tuple[str, ...] = (
     FEED_CHAINLINK,
@@ -61,54 +76,103 @@ class FeedState:
     prices: dict[str, Decimal] = field(default_factory=dict)
     """Último valor de cada feed de precio puntual, en unidades de su propia fuente."""
 
-    book: Quote | None = None
-    tick_size: Decimal | None = None
-    """Solo lo que dijo `tick_size_change` o el snapshot: nunca un valor asumido (§4)."""
+    books: dict[str, Quote] = field(default_factory=dict)
+    """Top of book por `asset_id` (token del outcome), nunca compartido entre outcomes."""
+
+    tick_sizes: dict[str, Decimal] = field(default_factory=dict)
+    """Tick vigente por `asset_id`. Solo lo que dijo el servidor: nunca un valor asumido (§4)."""
 
     _updated_at: dict[str, float] = field(default_factory=dict)
+    """Instante monótono de la última actualización."""
+
+    _updated_wall: dict[str, float] = field(default_factory=dict)
+    """Instante de reloj de pared de la misma actualización. NO es redundante: ver `age_s`."""
+
     reconnects: dict[str, int] = field(default_factory=dict)
 
     # -- escritura ----------------------------------------------------------------
 
-    def set_price(self, name: str, value: Decimal, *, now: float | None = None) -> None:
+    def set_price(
+        self, name: str, value: Decimal, *, now: float | None = None, wall: float | None = None
+    ) -> None:
         if value <= 0:
             raise ValueError(f"precio no positivo en el feed {name!r}: {value}")
         self.prices[name] = value
+        self._stamp(name, now, wall)
+
+    def set_book(
+        self,
+        asset_id: str,
+        quote: Quote,
+        *,
+        now: float | None = None,
+        wall: float | None = None,
+    ) -> None:
+        self.books[asset_id] = quote
+        self._stamp(book_feed(asset_id), now, wall)
+
+    def book(self, asset_id: str) -> Quote | None:
+        return self.books.get(asset_id)
+
+    def _stamp(self, name: str, now: float | None, wall: float | None) -> None:
         self._updated_at[name] = _now(now)
+        self._updated_wall[name] = _wall(now if wall is None else wall)
 
-    def set_book(self, quote: Quote, *, now: float | None = None) -> None:
-        self.book = quote
-        self._updated_at[FEED_BOOK] = _now(now)
-
-    def set_tick_size(self, tick_size: Decimal) -> None:
+    def set_tick_size(self, asset_id: str, tick_size: Decimal) -> None:
         if tick_size <= 0:
             raise ValueError(f"tick_size debe ser positivo: {tick_size}")
-        self.tick_size = tick_size
+        self.tick_sizes[asset_id] = tick_size
+
+    def tick_size(self, asset_id: str) -> Decimal | None:
+        return self.tick_sizes.get(asset_id)
 
     def note_reconnect(self, name: str) -> None:
         self.reconnects[name] = self.reconnects.get(name, 0) + 1
 
     # -- lectura ------------------------------------------------------------------
 
-    def age_s(self, name: str, *, now: float | None = None) -> float | None:
+    def age_s(
+        self, name: str, *, now: float | None = None, wall: float | None = None
+    ) -> float | None:
         """Segundos desde la última actualización, o `None` si nunca llegó nada.
 
         `None` no es "fresco": es "no hay dato", y `is_stale` lo trata como stale.
+
+        **Se toma el máximo entre el reloj monótono y el de pared, y no es paranoia:**
+        en macOS `time.monotonic()` NO cuenta el tiempo que la máquina pasa suspendida.
+        Medido en una corrida de una hora: la máquina se durmió 108 s y al despertar el
+        monótono había avanzado 1 s, así que todos los feeds figuraban con 2 s de edad
+        cuando los datos tenían casi dos minutos. Con solo el monótono, el halt por
+        staleness de §5.2 —la salvaguarda que existe justo para no cotizar sobre datos
+        viejos— habría dado luz verde sobre datos de hace dos minutos.
+
+        El de pared solo tampoco vale: un ajuste de NTP lo mueve hacia atrás y fabricaría
+        frescura de la nada. El máximo de los dos se equivoca siempre hacia el lado
+        seguro, que es declarar stale de más.
         """
         last = self._updated_at.get(name)
         if last is None:
             return None
-        return max(0.0, _now(now) - last)
+        by_monotonic = _now(now) - last
+        by_wall = _wall(now if wall is None else wall) - self._updated_wall.get(name, last)
+        return max(0.0, by_monotonic, by_wall)
 
-    def is_stale(self, name: str, *, now: float | None = None) -> bool:
-        age = self.age_s(name, now=now)
+    def is_stale(self, name: str, *, now: float | None = None, wall: float | None = None) -> bool:
+        age = self.age_s(name, now=now, wall=wall)
         return age is None or age > self.staleness_s
 
-    def stale_feeds(self, required: tuple[str, ...], *, now: float | None = None) -> list[str]:
+    def stale_feeds(
+        self, required: tuple[str, ...], *, now: float | None = None, wall: float | None = None
+    ) -> list[str]:
         """Los feeds de `required` que no están frescos. Vacío = se puede cotizar."""
-        return [name for name in required if self.is_stale(name, now=now)]
+        return [name for name in required if self.is_stale(name, now=now, wall=wall)]
 
 
 def _now(now: float | None = None) -> float:
     """Reloj monótono. Inyectable porque los tests no deben depender de dormir."""
     return time.monotonic() if now is None else now
+
+
+def _wall(wall: float | None = None) -> float:
+    """Reloj de pared. Sí cuenta la suspensión del sistema; ver `FeedState.age_s`."""
+    return time.time() if wall is None else wall

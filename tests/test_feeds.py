@@ -25,12 +25,12 @@ from polybtc.feeds.parsing import as_decimal, loads_decimal
 from polybtc.feeds.state import (
     FEED_BINANCE_DIRECT,
     FEED_BINANCE_RELAY,
-    FEED_BOOK,
     FEED_CHAINLINK,
     FEED_TWAP30,
     FEED_TWAP60,
     FeedState,
     Quote,
+    book_feed,
 )
 from polybtc.feeds.ws import BackoffPolicy, run_feed_forever
 
@@ -354,7 +354,7 @@ def test_snapshot_no_asume_el_orden_de_los_niveles(state: FeedState) -> None:
     )
     book.handle_message(raw, state)
 
-    assert state.book == Quote(bid=Decimal("0.495"), ask=Decimal("0.505"))
+    assert state.book("0xabc") == Quote(bid=Decimal("0.495"), ask=Decimal("0.505"))
 
 
 def test_price_change_usa_la_ultima_entrada(state: FeedState) -> None:
@@ -370,40 +370,52 @@ def test_price_change_usa_la_ultima_entrada(state: FeedState) -> None:
     )
     book.handle_message(raw, state)
 
-    assert state.book == Quote(bid=Decimal("0.420"), ask=Decimal("0.430"))
+    assert state.book("0xabc") == Quote(bid=Decimal("0.420"), ask=Decimal("0.430"))
 
 
 def test_tick_size_change_reemplaza_el_valor_guardado(state: FeedState) -> None:
     """§4: el CLOB rechaza órdenes con tick obsoleto, y el rechazo no es descriptivo."""
-    state.set_tick_size(Decimal("0.01"))
+    state.set_tick_size("0xabc", Decimal("0.01"))
     raw = json.dumps(
-        {"event_type": "tick_size_change", "old_tick_size": "0.01", "new_tick_size": "0.001"}
+        {
+            "event_type": "tick_size_change",
+            "asset_id": "0xabc",
+            "old_tick_size": "0.01",
+            "new_tick_size": "0.001",
+        }
     )
     book.handle_message(raw, state)
 
-    assert state.tick_size == Decimal("0.001")
+    assert state.tick_size("0xabc") == Decimal("0.001")
 
 
 def test_book_acepta_un_array_de_eventos(state: FeedState) -> None:
     """El canal puede mandar varios eventos en un frame."""
     raw = json.dumps(
         [
-            {"event_type": "tick_size_change", "new_tick_size": "0.001"},
-            {"event_type": "best_bid_ask", "best_bid": "0.51", "best_ask": "0.52"},
+            {"event_type": "tick_size_change", "asset_id": "0xabc", "new_tick_size": "0.001"},
+            {
+                "event_type": "best_bid_ask",
+                "asset_id": "0xabc",
+                "best_bid": "0.51",
+                "best_ask": "0.52",
+            },
         ]
     )
     book.handle_message(raw, state)
 
-    assert state.tick_size == Decimal("0.001")
-    assert state.book == Quote(bid=Decimal("0.51"), ask=Decimal("0.52"))
+    assert state.tick_size("0xabc") == Decimal("0.001")
+    assert state.book("0xabc") == Quote(bid=Decimal("0.51"), ask=Decimal("0.52"))
 
 
 def test_last_trade_price_no_toca_el_book(state: FeedState) -> None:
     """§3.4: el último trade lleva bid-ask bounce y no es insumo de nada."""
-    raw = json.dumps({"event_type": "last_trade_price", "price": "0.55", "size": "10"})
+    raw = json.dumps(
+        {"event_type": "last_trade_price", "asset_id": "0xabc", "price": "0.55", "size": "10"}
+    )
     book.handle_message(raw, state)
 
-    assert state.book is None
+    assert state.books == {}
 
 
 # ---------------------------------------------------------------------------
@@ -426,9 +438,9 @@ def test_staleness_dispara_en_el_umbral(state: FeedState) -> None:
 
 def test_stale_feeds_lista_solo_los_requeridos(state: FeedState) -> None:
     state.set_price(FEED_CHAINLINK, Decimal("65000"), now=100.0)
-    state.set_book(Quote(bid=Decimal("0.49"), ask=Decimal("0.51")), now=100.0)
+    state.set_book("0xabc", Quote(bid=Decimal("0.49"), ask=Decimal("0.51")), now=100.0)
 
-    required = (FEED_CHAINLINK, FEED_TWAP30, FEED_BOOK)
+    required = (FEED_CHAINLINK, FEED_TWAP30, book_feed("0xabc"))
     assert state.stale_feeds(required, now=101.0) == [FEED_TWAP30]
 
 
@@ -559,3 +571,92 @@ async def test_cancelar_la_tarea_para_el_feed() -> None:
 
 async def _noop_connect(_ws: object) -> None:
     return None
+
+
+def test_la_suspension_del_sistema_no_finge_frescura() -> None:
+    """En macOS `time.monotonic()` no cuenta el tiempo suspendido.
+
+    Reproduce lo medido en una corrida real: la máquina durmió 108 s de reloj de pared y
+    el monótono avanzó 1 s. Con solo el monótono, el feed figuraba con 2 s de edad y el
+    halt de §5.2 habría dejado cotizar sobre datos de casi dos minutos.
+    """
+    state = FeedState(staleness_s=3.0)
+    state.set_price(FEED_CHAINLINK, Decimal("78513.73"), now=1_000.0, wall=1_700_000_000.0)
+
+    # Un segundo de monótono, 108 de pared: exactamente el patrón de la suspensión.
+    edad = state.age_s(FEED_CHAINLINK, now=1_001.0, wall=1_700_000_108.0)
+
+    assert edad == pytest.approx(108.0)
+    assert state.is_stale(FEED_CHAINLINK, now=1_001.0, wall=1_700_000_108.0)
+
+
+def test_un_salto_de_ntp_hacia_atras_no_borra_la_edad() -> None:
+    """El reloj de pared solo tampoco vale: NTP lo mueve y fabricaría frescura.
+
+    El máximo de los dos relojes se equivoca siempre hacia declarar stale de más, que es
+    el lado seguro.
+    """
+    state = FeedState(staleness_s=3.0)
+    state.set_price(FEED_CHAINLINK, Decimal("78513.73"), now=1_000.0, wall=1_700_000_000.0)
+
+    # 10 s de monótono, pero NTP retrasó el reloj de pared 60 s.
+    edad = state.age_s(FEED_CHAINLINK, now=1_010.0, wall=1_699_999_940.0)
+
+    assert edad == pytest.approx(10.0)
+    assert state.is_stale(FEED_CHAINLINK, now=1_010.0, wall=1_699_999_940.0)
+
+
+def test_los_dos_outcomes_no_comparten_libro(state: FeedState) -> None:
+    """Una binaria son DOS instrumentos con precios complementarios.
+
+    Antes de indexar por `asset_id` esto se veía en vivo como `0.02/0.03` alternando con
+    `0.97/0.98` en la misma casilla, un segundo sí y otro no. No hay error, no hay excepción
+    y el consumidor no puede notar que está leyendo el instrumento equivocado — que en un
+    mercado binario es el contrario exacto del que cree.
+    """
+    raw = json.dumps(
+        [
+            {
+                "event_type": "best_bid_ask",
+                "asset_id": "UP",
+                "best_bid": "0.97",
+                "best_ask": "0.98",
+            },
+            {
+                "event_type": "best_bid_ask",
+                "asset_id": "DOWN",
+                "best_bid": "0.02",
+                "best_ask": "0.03",
+            },
+        ]
+    )
+    book.handle_message(raw, state)
+
+    assert state.book("UP") == Quote(bid=Decimal("0.97"), ask=Decimal("0.98"))
+    assert state.book("DOWN") == Quote(bid=Decimal("0.02"), ask=Decimal("0.03"))
+
+
+def test_price_change_reparte_por_token(state: FeedState) -> None:
+    """Un mismo frame puede traer deltas de los dos outcomes mezclados."""
+    raw = json.dumps(
+        {
+            "event_type": "price_change",
+            "price_changes": [
+                {"asset_id": "UP", "best_bid": "0.90", "best_ask": "0.91"},
+                {"asset_id": "DOWN", "best_bid": "0.09", "best_ask": "0.10"},
+                {"asset_id": "UP", "best_bid": "0.92", "best_ask": "0.93"},
+            ],
+        }
+    )
+    book.handle_message(raw, state)
+
+    assert state.book("UP") == Quote(bid=Decimal("0.92"), ask=Decimal("0.93"))
+    assert state.book("DOWN") == Quote(bid=Decimal("0.09"), ask=Decimal("0.10"))
+
+
+def test_un_evento_sin_asset_id_se_descarta(state: FeedState) -> None:
+    """Sin `asset_id` no se sabe de qué outcome se habla: adivinarlo es peor que perderlo."""
+    raw = json.dumps({"event_type": "best_bid_ask", "best_bid": "0.51", "best_ask": "0.52"})
+    book.handle_message(raw, state)
+
+    assert state.books == {}

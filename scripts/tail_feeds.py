@@ -25,11 +25,11 @@ from polybtc.feeds import book, rtds, spot
 from polybtc.feeds.state import (
     FEED_BINANCE_DIRECT,
     FEED_BINANCE_RELAY,
-    FEED_BOOK,
     FEED_CHAINLINK,
     FEED_TWAP30,
     FEED_TWAP60,
     FeedState,
+    book_feed,
 )
 from polybtc.model.basis import BasisEstimator
 
@@ -38,7 +38,7 @@ TICK_S = 1.0
 HEADER = (
     f"{'hora':>8}  {'chainlink':>11} {'twap30':>11} {'twap60':>11} "
     f"{'bnc_dir':>11} {'bnc_rly':>11}  {'basis$':>8} {'n':>4}  "
-    f"{'bid':>6} {'ask':>6}  edades(s)"
+    f"{'tok0 bid/ask':>13} {'tok1 bid/ask':>13}  edades(s)"
 )
 
 
@@ -67,20 +67,22 @@ async def main() -> None:
             loop.add_signal_handler(sig, stop.set)
 
     try:
-        await _print_loop(state, basis, stop)
+        await _print_loop(state, basis, settings, stop)
     finally:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def _print_loop(state: FeedState, basis: BasisEstimator, stop: asyncio.Event) -> None:
+async def _print_loop(
+    state: FeedState, basis: BasisEstimator, settings: Settings, stop: asyncio.Event
+) -> None:
     tick = 0
     while not stop.is_set():
         if tick % 25 == 0:
             print(HEADER)
         _feed_basis(state, basis)
-        print(_render(state, basis), flush=True)
+        print(_render(state, basis, settings), flush=True)
         tick += 1
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop.wait(), timeout=TICK_S)
@@ -102,7 +104,7 @@ def _feed_basis(state: FeedState, basis: BasisEstimator) -> None:
     basis.update(asyncio.get_running_loop().time(), float(chainlink), float(binance))
 
 
-def _render(state: FeedState, basis: BasisEstimator) -> str:
+def _render(state: FeedState, basis: BasisEstimator, settings: Settings) -> str:
     now = datetime.now(UTC).strftime("%H:%M:%S")
     binance = state.prices.get(FEED_BINANCE_DIRECT)
 
@@ -115,21 +117,22 @@ def _render(state: FeedState, basis: BasisEstimator) -> str:
     if not basis.ready:
         basis_usd = basis_usd.strip().rjust(7) + "?"  # `?` = aún no converge → no cotizar
 
-    quote = state.book
-    bid = _money(quote.bid, 3) if quote else "     ·"
-    ask = _money(quote.ask, 3) if quote else "     ·"
+    # Un libro por outcome, nunca fundidos: son instrumentos distintos y sus precios son
+    # complementarios, así que compartir casilla se ve como un parpadeo, no como un error.
+    books = []
+    for token in settings.token_ids[:2]:
+        quote = state.book(token)
+        books.append(f"{quote.bid:.2f}/{quote.ask:.2f}" if quote else "·")
 
-    ages = " ".join(
-        f"{label}={_age(state, feed)}"
-        for label, feed in (
-            ("cl", FEED_CHAINLINK),
-            ("t30", FEED_TWAP30),
-            ("t60", FEED_TWAP60),
-            ("bd", FEED_BINANCE_DIRECT),
-            ("br", FEED_BINANCE_RELAY),
-            ("bk", FEED_BOOK),
-        )
-    )
+    age_pairs = [
+        ("cl", FEED_CHAINLINK),
+        ("t30", FEED_TWAP30),
+        ("t60", FEED_TWAP60),
+        ("bd", FEED_BINANCE_DIRECT),
+        ("br", FEED_BINANCE_RELAY),
+    ]
+    age_pairs += [(f"bk{i}", book_feed(t)) for i, t in enumerate(settings.token_ids[:2])]
+    ages = " ".join(f"{label}={_age(state, feed)}" for label, feed in age_pairs)
     reconnects = sum(state.reconnects.values())
     suffix = f"  rc={reconnects}" if reconnects else ""
 
@@ -141,7 +144,8 @@ def _render(state: FeedState, basis: BasisEstimator) -> str:
         f"{_money(binance, 2):>11} "
         f"{_money(state.prices.get(FEED_BINANCE_RELAY), 2):>11}  "
         f"{basis_usd:>8} {basis.samples:>4}  "
-        f"{bid:>6} {ask:>6}  {ages}{suffix}"
+        f"{books[0] if books else '·':>13} {books[1] if len(books) > 1 else '·':>13}  "
+        f"{ages}{suffix}"
     )
 
 
