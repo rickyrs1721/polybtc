@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>polybtc · Fase 0</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36; --text: #d7dce5;
+    --dim: #8a93a6; --ok: #48b16a; --warn: #d6a13a; --bad: #d0524f;
+    --accent: #5b8dd9; --accent2: #b06fd0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+    padding: 12px 18px; border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 14px; margin: 0; font-weight: 600; letter-spacing: .04em; }
+  header .note { color: var(--dim); font-size: 12px; }
+  main {
+    display: grid; gap: 12px; padding: 12px 18px 40px;
+    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; }
+  section.wide { grid-column: 1 / -1; }
+  h2 { font-size: 12px; margin: 0 0 10px; color: var(--dim); font-weight: 600;
+       text-transform: uppercase; letter-spacing: .08em; }
+  h2 small { text-transform: none; letter-spacing: 0; color: var(--line); }
+  .grid { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; }
+  .grid dt { color: var(--dim); }
+  .grid dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+  .big { font-size: 26px; font-variant-numeric: tabular-nums; }
+  .feeds { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    display: flex; align-items: center; gap: 6px; padding: 3px 9px;
+    border: 1px solid var(--line); border-radius: 999px; font-size: 12px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+  .ok { background: var(--ok); } .warn { background: var(--warn); } .bad { background: var(--bad); }
+  .t-ok { color: var(--ok); } .t-warn { color: var(--warn); } .t-bad { color: var(--bad); }
+  .t-dim { color: var(--dim); }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { padding: 3px 6px; text-align: right; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--dim); font-weight: 500; }
+  svg { width: 100%; display: block; }
+  .legend { display: flex; gap: 14px; color: var(--dim); font-size: 12px; margin-top: 6px; }
+  .swatch { display: inline-block; width: 10px; height: 2px; vertical-align: middle; margin-right: 5px; }
+  .banner { padding: 8px 12px; border-radius: 4px; margin-bottom: 10px; }
+  .banner.bad { background: #3a1e1e; color: #f0b6b4; }
+  .banner.ok { background: #1c2f22; color: #a9dcbb; }
+</style>
+</head>
+<body>
+<header>
+  <h1>polybtc · fase 0</h1>
+  <span class="note" id="conn">conectando…</span>
+  <span class="note" id="uptime"></span>
+  <span class="note" id="rows"></span>
+  <span class="note">sin PnL: en Fase 0 no se opera (§6)</span>
+</header>
+
+<main>
+  <section>
+    <h2>Feeds <small>salud operativa</small></h2>
+    <div class="feeds" id="feeds"></div>
+    <dl class="grid" style="margin-top:12px">
+      <dt>reconexiones</dt><dd id="reconnects">·</dd>
+      <dt>umbral staleness</dt><dd id="staleness">·</dd>
+      <dt>último volcado</dt><dd id="flush">·</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Halts <small>§5.2</small></h2>
+    <div id="halt-banner" class="banner ok">sin banderas activas</div>
+    <dl class="grid">
+      <dt>kill switch</dt><dd class="t-dim">n/a · no se opera en Fase 0</dd>
+      <dt>época</dt><dd id="epoch">·</dd>
+      <dt>τ restante</dt><dd id="tau">·</dd>
+      <dt>strike</dt><dd id="strike">·</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Basis <small>Fase 0 · pregunta 5</small></h2>
+    <div class="big" id="basis">·</div>
+    <dl class="grid">
+      <dt>muestras</dt><dd id="basis-n">·</dd>
+      <dt>chainlink</dt><dd id="chainlink">·</dd>
+      <dt>binance</dt><dd id="binance">·</dd>
+      <dt>relay − directo</dt><dd id="relay-gap">·</dd>
+    </dl>
+    <svg id="basis-chart" viewBox="0 0 600 120" preserveAspectRatio="none" height="120"></svg>
+    <div class="legend"><span id="basis-stats" class="t-dim"></span></div>
+  </section>
+
+  <section>
+    <h2>Volatilidad <small>§3.4</small></h2>
+    <div class="big" id="sigma">·</div>
+    <dl class="grid">
+      <dt>banda dura</dt><dd id="sigma-band">·</dd>
+      <dt>muestras</dt><dd id="sigma-n">·</dd>
+    </dl>
+    <svg id="sigma-chart" viewBox="0 0 600 120" preserveAspectRatio="none" height="120"></svg>
+  </section>
+
+  <section class="wide">
+    <h2>Fair vs mid vs bid/ask <small>Fase 0 · pregunta 2 — una serie por hipótesis de ventana (§8)</small></h2>
+    <svg id="fair-chart" viewBox="0 0 1200 220" preserveAspectRatio="none" height="220"></svg>
+    <div class="legend" id="fair-legend"></div>
+  </section>
+
+  <section class="wide">
+    <h2>|fair − mid| <small>Fase 0 · pregunta 2 — líneas en 1,75¢ (fee taker) y 3¢ (colchón)</small></h2>
+    <div id="hist-wrap"></div>
+  </section>
+
+  <section class="wide">
+    <h2>|fair − mid| por bucket de τ <small>Fase 0 · pregunta 6 — si solo aparece bajo 30 s, es latencia (§2.3)</small></h2>
+    <div id="tau-wrap"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const NBSP = "·";
+
+const fmt = (v, digits = 2) =>
+  v === null || v === undefined ? NBSP : Number(v).toLocaleString("es", {
+    minimumFractionDigits: digits, maximumFractionDigits: digits });
+const cents = (v) => v === null || v === undefined ? NBSP : (v * 100).toFixed(2) + "¢";
+const pct = (v) => v === null || v === undefined ? NBSP : (v * 100).toFixed(1) + "%";
+
+// -- estado vivo por SSE --------------------------------------------------------------
+// El semáforo usa el MISMO umbral que el grabador: viaja en el propio mensaje. Un panel
+// con su propio umbral mentiría sobre cuándo el sistema está ciego.
+const FEEDS = [
+  ["chainlink", "age_chainlink"], ["twap30", "age_twap30"], ["twap60", "age_twap60"],
+  ["binance", "age_binance_direct"], ["relay", "age_binance_relay"],
+  ["book Up", "age_book_up"], ["book Down", "age_book_down"],
+];
+
+function ageClass(age, limit) {
+  if (age === null || age === undefined) return "";
+  if (age > limit) return "bad";
+  if (age > limit / 2) return "warn";
+  return "ok";
+}
+
+function renderStatus(payload) {
+  const s = payload.status, th = payload.thresholds;
+  $("conn").textContent = payload.connected ? "grabador vivo" : "sin grabador: state.db no existe todavía";
+  $("conn").className = "note " + (payload.connected ? "t-ok" : "t-bad");
+  if (!s) return;
+
+  $("uptime").textContent = "uptime " + fmt(s.uptime_s / 3600, 2) + " h";
+  $("rows").textContent = (s.rows_written ?? 0) + " filas · " + (s.rows_pending ?? 0) + " en buffer";
+
+  $("feeds").innerHTML = FEEDS.map(([label, key]) => {
+    const age = s[key];
+    return `<span class="chip"><i class="dot ${ageClass(age, th.staleness_s)}"></i>${label}
+      <span class="t-dim">${age === null || age === undefined ? "--" : fmt(age, 1) + "s"}</span></span>`;
+  }).join("");
+  $("reconnects").textContent = s.reconnects ?? 0;
+  $("staleness").textContent = fmt(th.staleness_s, 1) + " s";
+  $("flush").textContent = s.last_flush_at ? s.last_flush_at.slice(11, 19) + " UTC" : NBSP;
+
+  const reasons = (s.halt_reasons || "").split(",").filter(Boolean);
+  const banner = $("halt-banner");
+  banner.className = "banner " + (reasons.length ? "bad" : "ok");
+  banner.textContent = reasons.length ? reasons.join(" · ") : "sin banderas activas";
+
+  $("epoch").textContent = s.epoch_slug || "sin mercado (hueco entre épocas)";
+  $("tau").textContent = s.tau_s === null || s.tau_s === undefined ? NBSP : fmt(s.tau_s, 0) + " s";
+  $("strike").textContent = s.strike ? fmt(s.strike) + "  (" + s.strike_source + ")" : "sin strike";
+
+  $("basis").innerHTML = (s.basis_usd === null || s.basis_usd === undefined ? NBSP
+      : "$" + fmt(s.basis_usd)) +
+    (s.basis_ready ? "" : ' <span class="t-bad" style="font-size:13px">sin converger</span>');
+  $("basis-n").textContent = (s.basis_samples ?? 0) + " / " + th.basis_min_samples;
+  $("chainlink").textContent = fmt(s.chainlink);
+  $("binance").textContent = fmt(s.binance_mid);
+  $("relay-gap").textContent =
+    s.binance_relay && s.binance_mid ? fmt(s.binance_relay - s.binance_mid) : NBSP;
+
+  const sigma = s.sigma_annual;
+  $("sigma").innerHTML = sigma === null || sigma === undefined ? NBSP
+    : `<span class="${s.sigma_in_band ? "" : "t-bad"}">${pct(sigma)}</span> anual`;
+  $("sigma-band").textContent = pct(th.sigma_floor_annual) + " – " + pct(th.sigma_ceiling_annual);
+  $("sigma-n").textContent = s.sigma_samples ?? 0;
+}
+
+const stream = new EventSource("/api/stream");
+stream.onmessage = (e) => renderStatus(JSON.parse(e.data));
+stream.onerror = () => { $("conn").textContent = "stream caído · reintentando"; $("conn").className = "note t-bad"; };
+
+// -- gráficas (SVG a mano: sin CDN, esto corre en una máquina sin internet fiable) ------
+function line(values, w, h, color, range) {
+  const points = [];
+  const [lo, hi] = range;
+  const span = hi - lo || 1;
+  values.forEach((v, i) => {
+    if (v === null || v === undefined) return;
+    const x = values.length < 2 ? 0 : (i / (values.length - 1)) * w;
+    points.push(`${x.toFixed(1)},${(h - ((v - lo) / span) * h).toFixed(1)}`);
+  });
+  if (!points.length) return "";
+  return `<polyline fill="none" stroke="${color}" stroke-width="1.5" points="${points.join(" ")}"/>`;
+}
+
+function extent(...series) {
+  const values = series.flat().filter((v) => v !== null && v !== undefined);
+  if (!values.length) return null;
+  const lo = Math.min(...values), hi = Math.max(...values);
+  const pad = (hi - lo) * 0.08 || Math.abs(hi) * 0.02 || 1;
+  return [lo - pad, hi + pad];
+}
+
+function axisLabels(range, w, h) {
+  if (!range) return "";
+  const [lo, hi] = range;
+  return `<text x="2" y="10" fill="#8a93a6" font-size="10">${hi.toFixed(2)}</text>
+          <text x="2" y="${h - 3}" fill="#8a93a6" font-size="10">${lo.toFixed(2)}</text>`;
+}
+
+async function renderSeries() {
+  const data = await (await fetch("/api/series")).json();
+  const W = 600, H = 120;
+
+  const basisRange = extent(data.basis_usd);
+  $("basis-chart").innerHTML = axisLabels(basisRange, W, H) +
+    (basisRange ? line(data.basis_usd, W, H, "#5b8dd9", basisRange) : "");
+  const st = data.basis_stats;
+  $("basis-stats").textContent = st.n
+    ? `${data.hours} h · media $${fmt(st.mean)} · desv $${fmt(st.std)} · rango $${fmt(st.max - st.min)}`
+    : "sin datos todavía";
+
+  const sigmaRange = extent(data.sigma_annual);
+  $("sigma-chart").innerHTML = axisLabels(sigmaRange, W, H) +
+    (sigmaRange ? line(data.sigma_annual, W, H, "#b06fd0", sigmaRange) : "");
+
+  const FW = 1200, FH = 220;
+  const fairSeries = Object.entries(data.fair);
+  const range = extent(data.mid, data.bid, data.ask, ...fairSeries.map(([, v]) => v)) || [0, 1];
+  const colors = ["#48b16a", "#d6a13a", "#b06fd0"];
+  let svg = axisLabels(range, FW, FH);
+  svg += line(data.bid, FW, FH, "#3a4152", range);
+  svg += line(data.ask, FW, FH, "#3a4152", range);
+  svg += line(data.mid, FW, FH, "#d7dce5", range);
+  fairSeries.forEach(([label, values], i) => { svg += line(values, FW, FH, colors[i % colors.length], range); });
+  $("fair-chart").innerHTML = svg;
+  $("fair-legend").innerHTML =
+    `<span><i class="swatch" style="background:#3a4152"></i>bid/ask</span>
+     <span><i class="swatch" style="background:#d7dce5"></i>mid</span>` +
+    fairSeries.map(([label], i) =>
+      `<span><i class="swatch" style="background:${colors[i % colors.length]}"></i>fair ${label}</span>`).join("");
+}
+
+function histogramSvg(h, fee, cushion) {
+  const W = 1160, H = 160;
+  const max = Math.max(...h.counts, 1);
+  const bw = W / h.counts.length;
+  const bars = h.counts.map((c, i) => {
+    const barH = (c / max) * H;
+    return `<rect x="${(i * bw).toFixed(1)}" y="${(H - barH).toFixed(1)}"
+             width="${(bw - 1).toFixed(1)}" height="${barH.toFixed(1)}" fill="#5b8dd9"/>`;
+  }).join("");
+  const mark = (value, color, label) => {
+    const x = (value / h.edges[h.edges.length - 1]) * W;
+    if (x > W) return "";
+    return `<line x1="${x.toFixed(1)}" y1="0" x2="${x.toFixed(1)}" y2="${H}"
+              stroke="${color}" stroke-width="1" stroke-dasharray="3 3"/>
+            <text x="${(x + 4).toFixed(1)}" y="12" fill="${color}" font-size="10">${label}</text>`;
+  };
+  return `<svg viewBox="0 0 ${W} ${H + 14}" height="${H + 14}">${bars}
+    ${mark(fee, "#d6a13a", "1,75¢ fee taker")}${mark(cushion, "#d0524f", "3¢ colchón")}
+    <text x="0" y="${H + 12}" fill="#8a93a6" font-size="10">0¢</text>
+    <text x="${W - 26}" y="${H + 12}" fill="#8a93a6" font-size="10">${(h.edges[h.edges.length - 1] * 100).toFixed(0)}¢</text>
+  </svg>`;
+}
+
+async function renderEdge() {
+  const data = await (await fetch("/api/edge")).json();
+  const entries = Object.entries(data.windows);
+
+  $("hist-wrap").innerHTML = entries.map(([label, w]) => `
+    <div style="margin-bottom:14px">
+      <div class="t-dim">ventana ${label} · ${w.samples} muestras · &gt;1,75¢ ${pct(w.above_fee)} ·
+        <b class="${w.above_cushion > 0.01 ? "t-ok" : "t-bad"}">&gt;3¢ ${pct(w.above_cushion)}</b>
+        · media ${cents(w.stats.mean)} · p50 ${cents(w.stats.p50)}</div>
+      ${w.samples ? histogramSvg(w.histogram, data.fee_taker, data.cushion) : '<div class="t-dim">sin datos</div>'}
+    </div>`).join("");
+
+  $("tau-wrap").innerHTML = entries.map(([label, w]) => `
+    <div style="margin-bottom:14px">
+      <div class="t-dim">ventana ${label}</div>
+      <table>
+        <tr><th>τ (s)</th><th>muestras</th><th>media</th><th>&gt;1,75¢</th><th>&gt;3¢</th></tr>
+        ${w.by_tau.map((r) => `<tr>
+          <td>${r.low}–${r.high}${r.high <= 30 ? ' <span class="t-bad">latencia</span>' : ""}</td>
+          <td>${r.samples}</td><td>${cents(r.mean)}</td>
+          <td>${pct(r.above_fee)}</td><td>${pct(r.above_cushion)}</td></tr>`).join("")}
+      </table>
+    </div>`).join("");
+}
+
+async function refresh() {
+  try { await renderSeries(); await renderEdge(); } catch (e) { /* el heartbeat sigue */ }
+}
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>

@@ -8,8 +8,11 @@ requires-python = ">=3.12"
 # pyarrow...) se añaden con `uv add` cuando empiece la implementación de cada módulo.
 # No se pinnean aquí a ciegas: §1 exige verificar el SDK y las direcciones V2 antes de usarlos.
 dependencies = [
+    "fastapi>=0.141.1",
     "polymarket-client>=0.9.0",
+    "pyarrow>=25.0.1",
     "pydantic-settings>=2.15.0",
+    "uvicorn>=0.52.4",
     "websockets>=15,<16",
 ]
 
@@ -29,6 +32,7 @@ dev = [
     "pytest>=8.4.0",
     "pytest-asyncio>=1.0.0",
     "numpy>=2.5.2",
+    "httpx>=0.28.1",
 ]
 
 # ---------------------------------------------------------------------------
@@ -58,6 +62,7 @@ select = [
 ]
 ignore = [
     # σ, τ y − son la notación del proyecto (§3): no son homoglifos accidentales.
+    "RUF001",  # unicode ambiguo en cadenas (incluye los docstrings de atributo)
     "RUF002",  # unicode ambiguo en docstrings
     "RUF003",  # unicode ambiguo en comentarios
 ]
@@ -87,6 +92,12 @@ show_error_codes = true
 pretty = true
 # §9: sin excepciones en módulos que tocan dinero. Si un stub de terceros falta,
 # se ignora ese paquete aquí de forma explícita y nominal, nunca con un `# type: ignore` suelto.
+
+[[tool.mypy.overrides]]
+# pyarrow no publica `py.typed`. Solo lo tocan el grabador y el dashboard, que no colocan
+# órdenes: la excepción no alcanza a ningún módulo que mueva dinero.
+module = ["pyarrow.*"]
+ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------
 # pytest

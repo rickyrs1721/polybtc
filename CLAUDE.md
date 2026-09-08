@@ -375,8 +375,11 @@ polybtc/
 │   │   │                        #   comprobable el halt por staleness de §5.2.
 │   │   ├── ws.py                # bucle de conexión común: reconexión, backoff con
 │   │   │                        #   jitter y el PING de TEXTO (≠ ping del protocolo WS)
-│   │   └── parsing.py           # json.loads(parse_float=Decimal): es lo que hace que
-│   │                            #   la regla Decimal de §4 se cumpla desde el primer byte
+│   │   ├── parsing.py           # json.loads(parse_float=Decimal): es lo que hace que
+│   │   │                        #   la regla Decimal de §4 se cumpla desde el primer byte
+│   │   └── discovery.py         # época vigente por SLUG CONSTRUIDO y lectura del
+│   │                            #   desenlace. Los token ids rotan (§8.1); buscar por
+│   │                            #   end_date NO encuentra el mercado (§8.2)
 │   ├── model/
 │   │   ├── vol.py               # EWMA sobre rejilla 1s, piso/techo, banda
 │   │   ├── basis.py             # ← NUEVO: EWMA log(chainlink/binance)
@@ -393,16 +396,49 @@ polybtc/
 │   │   └── limits.py            # kill switch, exposición, pérdida diaria, staleness
 │   ├── paper/
 │   │   └── sim.py               # fills simulados contra el book real
+│   ├── recorder/                # ESCRIBE. Proceso 1: `python -m polybtc.recorder`
+│   │   ├── engine.py            # bucle de 1 Hz: feeds → modelo → fila. `tick()` es puro
+│   │   ├── schema.py            # esquema Arrow. Una columna de fair POR HIPÓTESIS (§8)
+│   │   ├── sink.py              # Parquet por hora vía staging Arrow IPC (ver abajo)
+│   │   ├── status.py            # state.db: `status` (1 fila/s) y `epochs` (1 fila/época)
+│   │   ├── epochs.py            # strike en la apertura, media observada y desenlace
+│   │   └── halts.py             # banderas de §5.2. En Fase 0 se GRABAN, no se aplican
+│   ├── dashboard/               # LEE. Proceso 2: `python -m polybtc.dashboard`
+│   │   ├── app.py               # FastAPI + SSE. localhost, sin autenticación
+│   │   ├── history.py           # agregados de los paneles desde los Parquet
+│   │   └── static/index.html    # una sola página, sin CDN
 │   ├── research/                # notebooks de análisis de Fase 0
 │   └── main.py
 ├── scripts/
 │   ├── tail_feeds.py            # una línea/s con precios, basis y edad de cada feed.
 │   │                            #   Es donde se hace la prueba del corte de red.
-│   └── find_market.py           # descubre el mercado de la época vigente y sus token ids.
-│                                #   Imprescindible: los token ids rotan (§8.1)
-├── data/                        # NO versionado. Parquet de la Fase 0 y línea base de feeds
+│   └── find_market.py           # herramienta de consola sobre feeds/discovery.py
+├── data/                        # NO versionado
+│   ├── YYYY/MM/DD/HH.parquet    # una fila por segundo. SIEMPRE completo y legible
+│   ├── YYYY/MM/DD/HH.arrow.part # hora en curso. Es el almacén durable real
+│   ├── epochs.jsonl             # journal append-only de épocas y desenlaces
+│   └── state.db                 # SQLite WAL. El dashboard lo abre en `mode=ro`
 └── tests/
 ```
+
+**Por qué el Parquet no se escribe de forma incremental.** Un Parquet solo es legible con su
+footer, y el footer se escribe al cerrar: un `ParquetWriter` abierto una hora y un `kill -9`
+a mitad no dejan un archivo incompleto, dejan uno **ilegible** que además rompe la lectura
+del directorio entero en el Sprint 5. Por eso cada volcado va a un stream Arrow IPC con
+`fsync` —formato de bloques autocontenidos, legible aunque esté truncado— y el Parquet se
+escribe de una vez al cerrar la hora, con `rename` atómico. Un apagón cuesta como mucho el
+último minuto sin volcar, nunca una hora, y nunca deja basura en `data/`.
+
+**El grabador y el dashboard no comparten nada más que el disco.** Ni memoria, ni imports:
+el dashboard no importa un solo módulo de ejecución. Si revienta, el grabador sigue.
+
+**El apagado ordenado tarda entre 6 y 16 segundos**, medido. No está colgado: son los tres
+WebSockets cerrando con su handshake (`close_timeout` de `websockets`) antes de que se
+vuelque el buffer y se cierre la hora. Consecuencias: el `TimeoutStopSec` de la unidad
+`systemd` del Sprint 4 tiene que ser holgado —el de por defecto, 90 s, sobra— y, al
+comprobar a mano que un `SIGTERM` dejó el Parquet, hay que **esperar a que el proceso
+termine de verdad**. Mirar el directorio a los tres segundos enseña el `.part` todavía
+abierto y parece un fallo que no existe.
 
 ### Reglas de implementación
 
@@ -416,6 +452,11 @@ polybtc/
     size vigente. Un `Decimal(str(x))` disperso por el código es cómo se pierde la frontera.
   - El SDK ya te devuelve `Decimal`, así que la frontera existe quieras o no. Hazla
     explícita.
+  - **El grabador guarda `float64` en el Parquet, y no es una excepción a la regla.** Va en
+    la dirección contraria —`Decimal` del feed a `float` en disco— y de ahí no sale ningún
+    precio hacia el CLOB: el Parquet es el sustrato de análisis. Una columna `decimal128`
+    llega a pandas como objetos de Python y convierte cualquier media o histograma en
+    aritmética de objetos. La conversión vive en un único sitio, `recorder/schema.py::f()`.
 - **Precisión de precio según tick size.** Con tick `0.01`: 2 decimales de precio, 2 de
   tamaño, 4 de monto. El tick puede cambiar en vivo — escucha `tick_size_change` y
   reemplaza el valor guardado; el CLOB rechaza órdenes con tick obsoleto.
@@ -587,6 +628,15 @@ Marcar cuando se resuelvan. No implementar asumiendo una respuesta.
       **factor de 15**. Del mismo orden que el error que corrigió la v2, así que no se
       elige a ojo. **Se decide con datos**: grabar TWAP30/TWAP60 a 1 s junto a la frontera
       y la resolución de cada época, y ver qué hipótesis predice los desenlaces.
+      **El experimento ya está montado y corriendo**: el grabador escribe el fair bajo las
+      dos hipótesis a la vez (`fair_w60` y `fair_w900`, de
+      `Settings.twap_window_hypotheses_s`), más la frontera exacta de cada época, sus
+      valores de cierre y su desenlace en la tabla `epochs`. La decisión se toma en el
+      Sprint 5 con esos datos delante, no antes. Grabar una sola hipótesis habría obligado
+      a acertar antes de tener con qué acertar, y fallar habría invalidado los 14 días.
+      Nota: la fuente que cita la propia página del mercado sigue siendo
+      `btc-usd-twap-60s`, mientras el título sigue diciendo un rango de 15 minutos —
+      verificado de nuevo el 2026-09-08. La contradicción es del producto, no de la lectura.
 - [x] **Tratamiento del empate**: el evento es **`>=`**, y el empate **resuelve "Up"**.
       Literal de la descripción: *«greater than or equal to the price at the beginning of
       that range»*. Verificado el 2026-09-08.
@@ -612,11 +662,45 @@ contradicen supuestos que este documento daba por buenos.
 | `rewards_min_size` | **50 shares** | **$25 a p=0.50.** El rebate de maker de §2.2 NO es alcanzable con el cap de posición de §5.1, ni siquiera con la opción (A) |
 | `rewards_max_spread` | 4.5 | — |
 
-**Los token ids rotan con cada época y no pueden vivir en `config.py`.** Entre el fin de
-una época y la creación de la siguiente hay una ventana de ~2 minutos en la que **no
-existe ningún mercado abierto** de la familia (medido: sin ninguno entre 18:58:49 y
-19:00:06 UTC). Cualquier proceso de larga duración tiene que descubrir el mercado de la
-época siguiente, no tenerlo configurado.
+**Los token ids rotan con cada época y no pueden vivir en `config.py`.** Cualquier proceso
+de larga duración tiene que descubrir el mercado de la época siguiente, no tenerlo
+configurado. Cómo descubrirlo está en §8.2.
+
+> Esta sección afirmaba además que entre el fin de una época y la creación de la siguiente
+> hay **un hueco de ~2 minutos sin ningún mercado abierto**. Es falso, y §8.2 explica de
+> dónde salía esa observación.
+
+### 8.2 Cómo se descubre la época, verificado el 2026-09-08 a las 21:48 UTC
+
+Tres correcciones de una vez, y las tres fallaban en silencio: no daban error, daban un
+grabador que no encontraba mercado o un strike a un día de distancia.
+
+| Supuesto anterior | Lo medido |
+| --- | --- |
+| Se busca el mercado listando por `end_date` | **No lo encuentra.** El servidor devuelve 100 elementos por página y hay ocho familias de cripto emitiendo un mercado cada 5 min: los `-5m` llenan la página y el `-15m`, que vence más tarde, se queda fuera. A las 21:48 el mercado de 21:45→22:00 existía y la búsqueda devolvía cero |
+| Hay un hueco de ~2 min entre épocas | **No hay hueco.** Las siguientes ocho épocas ya existían y aceptaban órdenes con más de dos horas de antelación. El «hueco» era este mismo fallo de paginación visto desde fuera |
+| `state.start_date` es la apertura de la época | Es cuándo se **creó** el mercado: `2026-09-07 22:01:23` para la época del día 8 a las 21:45. Un día de desfase, no seis segundos |
+
+**El slug es `<familia>-<inicio de la época en segundos Unix>`**, y el final es exactamente
+`inicio + duración`. Verificado: `btc-updown-15m-1788903900` → 1788903900 = 21:45:00 UTC,
+`end_date` = 22:00:00. De ahí sale el modo correcto de descubrir: **construir el slug** y
+pedirlo con `list_markets(slug=[...])`. Una petición, determinista, sin paginación de por
+medio, y con la frontera de la época conocida en vez de inferida.
+
+Dos consecuencias que el grabador aprovecha:
+
+- **La época siguiente ya está en memoria antes de empezar**, así que se adopta en el
+  segundo exacto de su apertura y `K` es el precio de ese segundo. Si la adopción dependiera
+  del sondeo de red, el strike llegaría con el retraso del sondeo — y a τ pequeño eso son
+  céntimos de fair (§2.3).
+- **El desenlace se lee por slug con `get_market`**, también para épocas pasadas. Es la
+  variable dependiente del experimento que decide la ventana TWAP de §8.
+
+Cuidado con una trampa al leerlo: una época recién vencida figura `closed=False` con el
+libro ya en `0.005/0.995`. El libro sabe el desenlace antes de que la resolución esté
+publicada, y leer ese precio como si fuera el desenlace contamina el experimento. Se exige
+`closed` o `uma_resolution_status == "resolved"` **y** un par de precios complementario y
+pegado a los extremos.
 
 ---
 
@@ -696,3 +780,19 @@ Lo que apareció al conectar contra el servidor real y al dejar el proceso una h
 | 2.1.c | **Nuevo**: línea base medida del basis | «Decenas de dólares» pasa a ser un número: $0,82 de desviación dentro de la hora, pero $14 de movimiento del nivel entre días |
 | 1 | `polymarket-client` entra como dependencia, y pinnea `websockets>=13,<16` | §2.1 obliga a contrastar la doc contra el tráfico del SDK; esa regla es inservible si no está instalado |
 | 4 | Árbol: añadidos `scripts/find_market.py` y `data/` | El descubrimiento de mercado es un componente, no un apaño de sesión |
+
+### v2.4 — al construir el grabador y el dashboard (septiembre 2026)
+
+El Sprint del grabador tocó la API de descubrimiento por primera vez de forma continua, y
+ahí se cayeron tres supuestos que venían de una medición puntual mal interpretada.
+
+| § | Cambio | Motivo |
+| --- | --- | --- |
+| 8.2 | **Nuevo**: la época se descubre construyendo el slug, no listando por `end_date` | La primera página del listado son 100 elementos y ocho familias de cripto emiten un mercado cada 5 min: el `-15m` se queda fuera. Medido: el mercado existía y la búsqueda devolvía cero |
+| 8.1 | **Retirado**: el «hueco de ~2 min entre épocas» | No existe. Las ocho épocas siguientes ya estaban creadas y aceptando órdenes. El hueco era el fallo de paginación visto desde fuera |
+| 8.2 | `state.start_date` no es la apertura de la época | Es la creación del mercado, con **un día** de antelación, no seis segundos. Como `K` es el precio en la apertura, usarlo pondría el strike a un día del que liquida |
+| 8 | La ventana TWAP sigue abierta, pero **el experimento ya corre** | El grabador escribe `fair_w60` y `fair_w900` a la vez, con la frontera y el desenlace de cada época. Elegir una habría invalidado los 14 días si se falla |
+| 4 | Árbol: `recorder/`, `dashboard/`, `feeds/discovery.py`, `data/` y `state.db` | Sin estar en el árbol, una sesión futura los trataría como código huérfano |
+| 4 | **Nuevo**: por qué el Parquet no se escribe incremental | Un Parquet sin footer no es un archivo incompleto, es uno ilegible que rompe la lectura del directorio entero |
+| 4 | La regla `Decimal` no se rompe al grabar `float64` en Parquet | Va en la dirección contraria y no alimenta ninguna orden; `decimal128` en pandas es aritmética de objetos |
+| 3.3 | La media observada la da el acumulador local, no el feed TWAP de RTDS | El feed es una media móvil sobre `[t−w, t]`; §3.3 pide `[T−w, t]`. Solo coinciden en `t = T`, y para `w=900` no hay feed que valga |

@@ -114,6 +114,20 @@ class FeedState:
     def book(self, asset_id: str) -> Quote | None:
         return self.books.get(asset_id)
 
+    def forget_book(self, asset_id: str) -> None:
+        """Olvida por completo un libro: su quote, su tick y su edad.
+
+        Los token ids rotan con cada época (§8.1), así que en 14 días de Fase 0 pasan por
+        aquí unos 2.700 libros. Sin olvidarlos no solo crecen los diccionarios: quedan
+        edades vivas de instrumentos que ya no existen, y `stale_feeds` sobre una lista
+        construida a partir de `books` empezaría a reportar como stale mercados muertos.
+        """
+        feed = book_feed(asset_id)
+        self.books.pop(asset_id, None)
+        self.tick_sizes.pop(asset_id, None)
+        self._updated_at.pop(feed, None)
+        self._updated_wall.pop(feed, None)
+
     def _stamp(self, name: str, now: float | None, wall: float | None) -> None:
         self._updated_at[name] = _now(now)
         self._updated_wall[name] = _wall(now if wall is None else wall)
