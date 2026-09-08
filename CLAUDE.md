@@ -130,7 +130,10 @@ fee_taker_por_share = 0.07 * p * (1 - p)        # cripto: feeRate = 0.07
 A `p = 0.50` son **$0.0175 por share** sobre un payoff de $1. Traducción: un trade agresivo
 necesita más de 1.75¢ de edge real solo para empatar, antes del spread.
 
-**Los makers pagan cero.** Además existe un programa de rebates para makers (20% en cripto).
+**Los makers pagan cero.** Además existe un programa de rebates para makers (20% en cripto)
+— pero **ese rebate no está a tu alcance**: el mercado objetivo pide `rewards_min_size` de
+50 shares, o sea $25 a `p=0.50`, por encima del cap de posición de §5.1 incluso en la
+opción (A). Cuenta con fee cero, no con el rebate (§8.1).
 
 Contexto que refuerza la decisión: cripto tiene el feeRate **más alto de todas las
 categorías** (0.07 frente a 0.03–0.05 del resto, y 0 en geopolítica). Ese diseño es
@@ -439,6 +442,14 @@ igual.
   hasta reinicio manual. Sin excepciones automáticas.
 - **Halt por staleness**: si el TWAP o el book llevan más de 3 s sin actualizar, retira
   cotizaciones. Cotizar con datos viejos es cómo se pierde dinero rápido.
+  > **La edad NO se mide solo con `time.monotonic()`.** En macOS ese reloj no cuenta el
+  > tiempo que la máquina pasa suspendida. Medido el 2026-09-08: tras 108 s de suspensión
+  > el monótono había avanzado 1 s y todos los feeds figuraban con ~2 s de edad teniendo
+  > los datos casi dos minutos — este halt habría dado luz verde sobre datos viejos, que
+  > es exactamente lo que existe para impedir. `feeds/state.py` toma el máximo entre el
+  > monótono y el reloj de pared: el de pared cubre la suspensión, el monótono cubre un
+  > salto de NTP hacia atrás, y el máximo se equivoca siempre hacia declarar stale de más.
+  > Corolario para la Fase 0: el grabador no puede vivir en una máquina que se suspenda.
 - **Halt por basis**: si el estimador de basis (§2.1.b) no ha convergido o su observación
   instantánea se sale del clamp, retira cotizaciones. Tu ancla está rota.
 - **Skew por inventario**: si te cargas de un lado de la binaria, desplaza las cotizaciones
@@ -531,14 +542,20 @@ fallará en producción.
 
 Marcar cuando se resuelvan. No implementar asumiendo una respuesta.
 
-- [ ] **Tipo de mercado objetivo**: ¿horarios up/down, épocas de 15 min, o strike fijo
-      ("BTC arriba de $X")? Cambia el modelo: strike fijo usa `N(d2)` completo; up/down
-      desde el open fija `K` en la apertura de la época.
-- [ ] **Ventana TWAP por mercado**: ¿30 s, 60 s, o liquidación puntual? Determina qué rama
-      de §3.2 aplica. **Verifícalo en la página de cada mercado, no lo asumas**: elegir mal
-      la ventana mete un sesgo de varianza del mismo orden que el bug que corrigió esta v2.
-- [ ] **Tratamiento del empate**: ¿el evento es `>` o `>=`? En una binaria cotizada a 0.50
-      el empate vale dinero real. Léelo en la descripción del mercado.
+- [x] **Tipo de mercado objetivo**: familia `btc-updown-15m` (existe también `-5m`).
+      **Up/down desde la apertura de la época**: `K` es el precio al inicio del rango, no
+      un strike fijo. Verificado el 2026-09-08 en la descripción del propio mercado.
+- [ ] **Ventana TWAP por mercado**: **sin resolver, y no por descuido.** La descripción
+      dice que resuelve por «el TWAP del **rango de tiempo especificado en el título**»
+      —15 minutos— pero cita como fuente el stream **`btc-usd-twap-60s`**. Son dos cosas
+      distintas y la documentación de Polymarket no cubre cómo resuelven estos mercados.
+      Medido con `delta_per_dollar` a τ=60 s: `w=60` da 0.01061 y `w=900` da 0.15913, un
+      **factor de 15**. Del mismo orden que el error que corrigió la v2, así que no se
+      elige a ojo. **Se decide con datos**: grabar TWAP30/TWAP60 a 1 s junto a la frontera
+      y la resolución de cada época, y ver qué hipótesis predice los desenlaces.
+- [x] **Tratamiento del empate**: el evento es **`>=`**, y el empate **resuelve "Up"**.
+      Literal de la descripción: *«greater than or equal to the price at the beginning of
+      that range»*. Verificado el 2026-09-08.
 - [ ] **Tipo de wallet**: Deposit Wallet (sig type 3, requiere envoltura ERC-7739 de la
       firma) vs Proxy (sig type 1). Determina toda la ruta de firmado. **Resuélvelo antes
       de escribir `execution/`** — no es refactorizable a mitad.
@@ -546,6 +563,26 @@ Marcar cuando se resuelvan. No implementar asumiendo una respuesta.
       de horizonte más largo).
 - [ ] **Sizing: opción (A) o (B) de §5.1**, tras los datos de Fase 0.
 - [ ] **Umbral de edge definitivo**, tras los datos de Fase 0.
+
+### 8.1 Hechos del mercado objetivo, verificados el 2026-09-08
+
+No son decisiones: son datos medidos contra la API. Se listan aquí porque tres de ellos
+contradicen supuestos que este documento daba por buenos.
+
+| Dato | Valor | Consecuencia |
+| --- | --- | --- |
+| `minimum_tick_size` | **0.01** | La tabla de §2.3 está en ticks de 0.001: sobre este mercado sus cifras se dividen por diez. Y 1¢ de granularidad es un tercio del colchón de 3¢ de §3.5 |
+| `minimum_order_size` | 5 shares | Confirma el problema de tamaño de §5.1 |
+| `seconds_delay` | `None` | Sin retardo de matching deliberado (§2.3) |
+| `fee_type` | `crypto_fees_v2` | — |
+| `rewards_min_size` | **50 shares** | **$25 a p=0.50.** El rebate de maker de §2.2 NO es alcanzable con el cap de posición de §5.1, ni siquiera con la opción (A) |
+| `rewards_max_spread` | 4.5 | — |
+
+**Los token ids rotan con cada época y no pueden vivir en `config.py`.** Entre el fin de
+una época y la creación de la siguiente hay una ventana de ~2 minutos en la que **no
+existe ningún mercado abierto** de la familia (medido: sin ninguno entre 18:58:49 y
+19:00:06 UTC). Cualquier proceso de larga duración tiene que descubrir el mercado de la
+época siguiente, no tenerlo configurado.
 
 ---
 
@@ -610,3 +647,15 @@ los tres fallan **en silencio**: no hay error, solo un feed que nunca se actuali
 | 2.1 | **Nuevo**: enrutar por tópico **y** `payload.symbol` | `crypto_prices_chainlink` puede responder bajo `crypto_prices`; confundirlos deja el basis de §2.1.b en 1 y devuelve el sesgo entero sin síntoma |
 | 2.1 | **Nuevo**: existe un backfill `type: "subscribe"` con `payload.data` | No documentado; permite arrancar con un valor bueno en vez de esperar al primer update |
 | 4 | Árbol: añadidos `feeds/state.py`, `feeds/ws.py`, `feeds/parsing.py` y `scripts/` | Sin estar en el árbol, una sesión futura los trataría como código huérfano |
+
+### v2.3 — al terminar `feeds/` (septiembre 2026)
+
+Lo que apareció al conectar contra el servidor real y al dejar el proceso una hora corriendo.
+
+| § | Cambio | Motivo |
+| --- | --- | --- |
+| 2.2 | El rebate de maker del 20% no es alcanzable | `rewards_min_size` = 50 shares = $25, por encima del cap de §5.1 |
+| 5.2 | La edad de un feed se mide con dos relojes, no uno | `time.monotonic()` no cuenta la suspensión en macOS: 108 s dormido se veían como 2 s de edad |
+| 8 | Cerradas: tipo de mercado (up/down desde el open) y empate (`>=`, resuelve "Up") | Verificadas en la descripción del mercado |
+| 8 | La ventana TWAP queda abierta **con el experimento que la decide escrito** | La descripción dice «TWAP del rango» y cita el stream de 60 s; hay un factor 15 en `delta_per_dollar` entre ambas lecturas |
+| 8.1 | **Nuevo**: hechos medidos del mercado objetivo | Tick 0.01 (no 0.001), y los token ids rotan por época con un hueco de ~2 min sin mercado |
