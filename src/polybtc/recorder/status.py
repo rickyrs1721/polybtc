@@ -71,6 +71,8 @@ STATUS_COLUMNS: tuple[tuple[str, str], ...] = (
     ("up_ask", "REAL"),
     ("down_bid", "REAL"),
     ("down_ask", "REAL"),
+    ("up_tick", "REAL"),
+    ("down_tick", "REAL"),
     ("fairs_json", "TEXT"),
     ("windows_json", "TEXT"),
 )

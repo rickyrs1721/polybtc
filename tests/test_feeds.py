@@ -389,6 +389,59 @@ def test_tick_size_change_reemplaza_el_valor_guardado(state: FeedState) -> None:
     assert state.tick_size("0xabc") == Decimal("0.001")
 
 
+def test_el_snapshot_siembra_el_tick_vigente(state: FeedState) -> None:
+    """El evento `book` TRAE `tick_size`, y es la única forma de conocerlo al conectar.
+
+    Verificado contra el canal `market` el 2026-09-11: el snapshot incluye `tick_size`.
+    Sin leerlo aquí, un mercado que nunca cambia de régimen mientras estamos conectados
+    dejaba el tick sin registrar para siempre — y §4 avisa de que el CLOB rechaza las
+    órdenes cuantizadas con un tick que no es el vigente.
+    """
+    raw = json.dumps(
+        {
+            "event_type": "book",
+            "asset_id": "0xabc",
+            "tick_size": "0.001",
+            "bids": [{"price": "0.003", "size": "500"}],
+            "asks": [{"price": "0.004", "size": "500"}],
+        }
+    )
+    book.handle_message(raw, state)
+
+    assert state.tick_size("0xabc") == Decimal("0.001")
+    assert state.book("0xabc") == Quote(bid=Decimal("0.003"), ask=Decimal("0.004"))
+
+
+def test_el_tick_se_registra_aunque_el_libro_este_de_un_solo_lado(state: FeedState) -> None:
+    """Un libro sin bids no da `Quote`, pero su tick sí es un dato bueno.
+
+    Medido el 2026-09-11 en una época deep-OTM: el snapshot llegó con `bids: []` y asks
+    desde 0.001. Descartar el evento entero por no tener las dos puntas tiraría el tick.
+    """
+    raw = json.dumps(
+        {
+            "event_type": "book",
+            "asset_id": "0xabc",
+            "tick_size": "0.001",
+            "bids": [],
+            "asks": [{"price": "0.001", "size": "100"}],
+        }
+    )
+    book.handle_message(raw, state)
+
+    assert state.tick_size("0xabc") == Decimal("0.001")
+    assert state.book("0xabc") is None, "sin las dos puntas no hay top of book"
+
+
+def test_un_tick_invalido_no_pisa_el_bueno(state: FeedState) -> None:
+    state.set_tick_size("0xabc", Decimal("0.01"))
+    for bad in ("0", "-0.01", "no-es-un-numero", None):
+        book.handle_message(
+            json.dumps({"event_type": "book", "asset_id": "0xabc", "tick_size": bad}), state
+        )
+    assert state.tick_size("0xabc") == Decimal("0.01")
+
+
 def test_book_acepta_un_array_de_eventos(state: FeedState) -> None:
     """El canal puede mandar varios eventos en un frame."""
     raw = json.dumps(

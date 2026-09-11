@@ -25,7 +25,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse, StreamingResponse
 
 from polybtc.config import Settings
-from polybtc.dashboard.history import Window, edge_panel, series_panel
+from polybtc.dashboard.history import Window, book_panel, edge_panel, series_panel
 from polybtc.recorder.status import StatusReader
 
 SERIES_CACHE_S = 30.0
@@ -60,6 +60,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     windows = [Window(suffix=name) for name in _window_suffixes(config)]
     series_cache = Cache(SERIES_CACHE_S)
     edge_cache = Cache(EDGE_CACHE_S)
+    book_cache = Cache(EDGE_CACHE_S)
 
     app = FastAPI(title="polybtc · Fase 0", docs_url=None, redoc_url=None)
 
@@ -111,6 +112,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             _now(),
         )
         return dict(edge_cache.set(panel) if hours is None else panel)
+
+    @app.get("/api/book")
+    async def book(hours: int | None = None) -> dict[str, Any]:
+        if hours is None and (cached := book_cache.get()) is not None:
+            return dict(cached)
+        panel = await asyncio.to_thread(
+            book_panel,
+            config.data_dir,
+            hours or config.dashboard_histogram_hours,
+            _now(),
+            # Solo el RESPALDO para filas sin tick grabado. El que manda es el de cada
+            # fila, porque el tick sigue al precio y cambia en vivo (§8.1).
+            tick=float(config.default_tick_size),
+        )
+        return dict(book_cache.set(panel) if hours is None else panel)
 
     @app.get("/api/epochs")
     async def epochs(limit: int = 20) -> dict[str, Any]:

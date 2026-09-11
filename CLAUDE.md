@@ -655,12 +655,36 @@ contradicen supuestos que este documento daba por buenos.
 
 | Dato | Valor | Consecuencia |
 | --- | --- | --- |
-| `minimum_tick_size` | **0.01** | La tabla de §2.3 está en ticks de 0.001: sobre este mercado sus cifras se dividen por diez. Y 1¢ de granularidad es un tercio del colchón de 3¢ de §3.5 |
+| `minimum_tick_size` | **no es una constante** | Ver el aviso de abajo: sigue al precio, no al mercado |
 | `minimum_order_size` | 5 shares | Confirma el problema de tamaño de §5.1 |
 | `seconds_delay` | `None` | Sin retardo de matching deliberado (§2.3) |
 | `fee_type` | `crypto_fees_v2` | — |
 | `rewards_min_size` | **50 shares** | **$25 a p=0.50.** El rebate de maker de §2.2 NO es alcanzable con el cap de posición de §5.1, ni siquiera con la opción (A) |
 | `rewards_max_spread` | 4.5 | — |
+
+> **El tick sigue al PRECIO, no al mercado.** Esta tabla registraba `minimum_tick_size =
+> 0.01` como un hecho de la familia y sacaba de ahí una conclusión sobre §2.3. Medido el
+> 2026-09-11, en la misma familia y el mismo día:
+>
+> | Época | Precio del Up | `minimum_tick_size` |
+> | --- | --- | --- |
+> | deep OTM | 0.0005 | **0.001** |
+> | tres épocas a la vez, cerca del medio | ~0.51 | **0.01** |
+>
+> Es lo que §4 ya avisaba —«¡el tick size cambia en vivo!»— y esta sección lo había
+> congelado. Tres consecuencias:
+>
+> - La tabla de ticks de §2.3 (expresada en ticks de 0.001) **se divide por diez solo en el
+>   régimen grueso**. Cerca de los extremos vale tal cual.
+> - El snapshot `book` del canal `market` **trae `tick_size`**, y es la única forma de
+>   conocerlo al conectar: si el mercado no cambia de régimen mientras estás conectado,
+>   `tick_size_change` no se dispara nunca y te quedas sin tick. `feeds/book.py` lo siembra
+>   del snapshot y lo reemplaza con cada cambio.
+> - El grabador escribe `up_tick` y `down_tick` en cada fila. Sin esa columna, medio céntimo
+>   de spread en el Parquet es ambiguo: libro pegado al suelo en régimen fino, o libro
+>   imposible en régimen grueso. Es la misma cifra con dos lecturas opuestas.
+>
+> `default_tick_size` en `config.py` es solo un arranque y un respaldo. Nunca un dato.
 
 **Los token ids rotan con cada época y no pueden vivir en `config.py`.** Cualquier proceso
 de larga duración tiene que descubrir el mercado de la época siguiente, no tenerlo
@@ -796,3 +820,17 @@ ahí se cayeron tres supuestos que venían de una medición puntual mal interpre
 | 4 | **Nuevo**: por qué el Parquet no se escribe incremental | Un Parquet sin footer no es un archivo incompleto, es uno ilegible que rompe la lectura del directorio entero |
 | 4 | La regla `Decimal` no se rompe al grabar `float64` en Parquet | Va en la dirección contraria y no alimenta ninguna orden; `decimal128` en pandas es aritmética de objetos |
 | 3.3 | La media observada la da el acumulador local, no el feed TWAP de RTDS | El feed es una media móvil sobre `[t−w, t]`; §3.3 pide `[T−w, t]`. Solo coinciden en `t = T`, y para `w=900` no hay feed que valga |
+
+### v2.5 — al añadir el panel de spread (septiembre 2026)
+
+Un panel que parecía cosmético destapó que el tick estaba escrito como constante cuando no
+lo es. Se corrige antes de arrancar los 14 días porque después una columna nueva parte el
+conjunto de datos en dos.
+
+| § | Cambio | Motivo |
+| --- | --- | --- |
+| 8.1 | **Corregido**: `minimum_tick_size` no es una constante de la familia | Medido el mismo día: 0.001 en una época deep-OTM y 0.01 en tres épocas cerca del medio. §4 ya avisaba y §8.1 lo había congelado |
+| 4 | `feeds/book.py` siembra el tick del snapshot `book`, no solo de `tick_size_change` | El snapshot trae `tick_size`; sin leerlo, un mercado que no cambia de régimen deja el tick sin registrar y el CLOB rechaza la orden sin decir por qué |
+| 4 | Grabador: columnas `up_tick` y `down_tick` por fila | Medio céntimo de spread es un libro al suelo con tick 0.001 y uno imposible con 0.01. Sin el tick grabado, la pregunta 1 de §6 no se puede responder |
+| 6 | Dashboard: panel de spread, por bucket de τ junto a \|fair − mid\| | La pregunta 1 es el techo de lo que un maker captura, y es lo único que distingue «hay edge a τ bajo» de «el libro se vacía y el mid deja de significar nada» (pregunta 6) |
+| 6 | Dashboard: chequeo de complementariedad `up_mid + down_mid − 1` | Canario de calidad del feed de libro. En 14 días eso se quiere ver el día 1, no el día 15 |

@@ -217,6 +217,8 @@ class Recorder:
             up_ask=None if up is None else f(up.ask),
             down_bid=None if down is None else f(down.bid),
             down_ask=None if down is None else f(down.ask),
+            up_tick=None if epoch is None else f(state.tick_size(epoch.up_token)),
+            down_tick=None if epoch is None else f(state.tick_size(epoch.down_token)),
             models=models,
             halted=flags.halted,
             halt_reasons=flags.joined(),
@@ -440,6 +442,8 @@ class Recorder:
                 "up_ask": sample.up_ask,
                 "down_bid": sample.down_bid,
                 "down_ask": sample.down_ask,
+                "up_tick": sample.up_tick,
+                "down_tick": sample.down_tick,
                 "fairs_json": _json(fairs),
                 "windows_json": _json([window_suffix(w) for w in self._windows]),
             }

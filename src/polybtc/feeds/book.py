@@ -105,9 +105,17 @@ def _handle_event(event: dict[str, Any], state: FeedState) -> None:
 
     if event_type == EVENT_BOOK:
         asset_id = _asset_id(event)
-        quote = top_of_book(event)
-        if asset_id and quote is not None:
-            state.set_book(asset_id, quote)
+        if asset_id:
+            # El snapshot TRAE el tick vigente, y es la única forma de conocerlo si el
+            # mercado nunca cambia de régimen mientras estamos conectados: verificado el
+            # 2026-09-11, el evento `book` incluye `tick_size`. Sin leerlo aquí, un mercado
+            # que arranca y se queda en 0.01 dejaba `tick_sizes` VACÍO para siempre, y §4
+            # avisa de que el CLOB rechaza órdenes cuantizadas con un tick que no es el
+            # vigente — con un rechazo genérico que se depura a ciegas.
+            _store_tick(event.get("tick_size"), asset_id, state)
+            quote = top_of_book(event)
+            if quote is not None:
+                state.set_book(asset_id, quote)
 
     elif event_type == EVENT_BEST_BID_ASK:
         asset_id = _asset_id(event)
@@ -120,11 +128,23 @@ def _handle_event(event: dict[str, Any], state: FeedState) -> None:
 
     elif event_type == EVENT_TICK_SIZE_CHANGE:
         asset_id = _asset_id(event)
-        tick = as_decimal(event.get("new_tick_size"))
-        if asset_id and tick is not None and tick > 0:
+        if asset_id:
             # §4: se REEMPLAZA el valor guardado. El CLOB rechaza órdenes cuantizadas con
             # un tick obsoleto, y el rechazo no es descriptivo.
-            state.set_tick_size(asset_id, tick)
+            _store_tick(event.get("new_tick_size"), asset_id, state)
+
+
+def _store_tick(raw: object, asset_id: str, state: FeedState) -> None:
+    """Guarda el tick vigente venga del snapshot o de un cambio en vivo.
+
+    **El tick sigue al PRECIO, no al mercado.** Medido el 2026-09-11 sobre la misma familia
+    y el mismo día: una época deep-OTM (Up=0,0005) cotizaba con tick `0.001` y tres épocas
+    a la vez, todas en torno a `0.51`, con tick `0.01`. No es un dato de catálogo que se
+    pueda leer una vez y guardar en la configuración.
+    """
+    tick = as_decimal(raw)
+    if tick is not None and tick > 0:
+        state.set_tick_size(asset_id, tick)
 
 
 def _handle_price_change(event: dict[str, Any], state: FeedState) -> None:

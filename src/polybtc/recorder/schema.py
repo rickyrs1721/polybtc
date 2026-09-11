@@ -98,6 +98,17 @@ class Sample:
     down_bid: float | None = None
     down_ask: float | None = None
 
+    up_tick: float | None = None
+    down_tick: float | None = None
+    """Tick VIGENTE de cada libro, tal como lo dijo el servidor. Nunca uno asumido.
+
+    Está aquí porque el tick **sigue al precio, no al mercado**: medido el 2026-09-11 sobre
+    la misma familia y el mismo día, una época deep-OTM cotizaba con tick `0.001` y tres
+    épocas en torno a `0.51` con tick `0.01`. Sin esta columna, un spread de medio céntimo
+    en el Parquet es ambiguo —¿libro pegado al suelo en régimen fino, o libro estrecho en
+    régimen grueso?— y la pregunta 1 de §6 no se puede responder.
+    """
+
     models: dict[float, ModelPoint] = field(default_factory=dict)
     """Salida del modelo por hipótesis de ventana. Ver la decisión 2 del módulo."""
 
@@ -142,6 +153,8 @@ _BASE_FIELDS: tuple[tuple[str, pa.DataType], ...] = (
     ("up_ask", pa.float64()),
     ("down_bid", pa.float64()),
     ("down_ask", pa.float64()),
+    ("up_tick", pa.float64()),
+    ("down_tick", pa.float64()),
 )
 
 _MODEL_FIELDS: tuple[tuple[str, pa.DataType], ...] = (

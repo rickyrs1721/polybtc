@@ -50,6 +50,7 @@ def write_hour(root: Path, start: datetime, rows: int = 120) -> None:
                     tau_s=max(1.0, tau),
                     up_bid=0.50,
                     up_ask=0.52,
+                    up_tick=0.01,
                     models={
                         60.0: ModelPoint(
                             fair=0.55 + (i % 7) * 0.01,
@@ -205,6 +206,140 @@ def test_una_columna_que_no_existe_no_tumba_el_panel(settings: Settings) -> None
     write_hour(settings.data_dir, NOW - timedelta(minutes=30))
     panel = history.edge_panel(settings.data_dir, 6, [history.Window("w1234")], NOW)
     assert panel["windows"]["w1234"]["samples"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Spread: pregunta 1 de §6, y lo que impide leer mal la 6
+# ---------------------------------------------------------------------------
+
+
+def test_el_histograma_de_spread_usa_una_escala_fija_no_el_tick(settings: Settings) -> None:
+    """Escalones de 0,1¢ y no «múltiplos del tick»: el tick cambia con el precio.
+
+    Con barras en múltiplos del tick, un `1` significaría 1¢ en las filas de régimen grueso
+    y 0,1¢ en las de régimen fino, mezcladas en el mismo histograma.
+    """
+    with ParquetSink(settings.data_dir, WINDOWS) as sink:
+        for i, (bid, ask) in enumerate([(0.50, 0.51), (0.50, 0.51), (0.50, 0.52), (0.40, 0.60)]):
+            sink.append(
+                Sample(
+                    ts=NOW + timedelta(seconds=i),
+                    up_bid=bid,
+                    up_ask=ask,
+                    up_tick=0.01,
+                    tau_s=100.0,
+                )
+            )
+        sink.flush()
+
+    panel = history.book_panel(settings.data_dir, 6, NOW + timedelta(minutes=1), tick=0.01)
+    by_step = {row["steps"]: row["count"] for row in panel["by_tick"]}
+    assert by_step[10] == 2, "1¢ son diez escalones de 0,1¢"
+    assert by_step[20] == 2, "2¢ cae justo en el borde, y 20¢ desborda al mismo bucket"
+    assert panel["resolution"] == pytest.approx(0.001)
+    assert panel["ticks_seen"] == [0.01]
+
+
+def test_pegado_al_tick_se_juzga_con_el_tick_de_cada_fila(settings: Settings) -> None:
+    """Medio céntimo es un libro al suelo con tick 0,001 e imposible con tick 0,01.
+
+    Es el hallazgo del 2026-09-11: el tick sigue al precio, no al mercado. Juzgar las dos
+    filas con un tick fijo daría la respuesta contraria en una de las dos.
+    """
+    with ParquetSink(settings.data_dir, WINDOWS) as sink:
+        # Régimen fino, deep OTM: 1 tick de spread. Está pegado al suelo.
+        sink.append(Sample(ts=NOW, up_bid=0.003, up_ask=0.004, up_tick=0.001, tau_s=100.0))
+        # Régimen grueso, cerca del medio: 5 ticks de spread. No lo está.
+        sink.append(
+            Sample(
+                ts=NOW + timedelta(seconds=1),
+                up_bid=0.50,
+                up_ask=0.55,
+                up_tick=0.01,
+                tau_s=99.0,
+            )
+        )
+        sink.flush()
+
+    panel = history.book_panel(settings.data_dir, 6, NOW + timedelta(minutes=1), tick=0.01)
+    assert panel["at_floor"] == pytest.approx(0.5), "uno sí y otro no"
+    assert panel["ticks_seen"] == [0.001, 0.01], "los dos regímenes conviven en la ventana"
+
+
+def test_una_fila_sin_tick_grabado_cae_al_respaldo(settings: Settings) -> None:
+    """Los Parquet anteriores a la columna `up_tick` siguen siendo legibles."""
+    with ParquetSink(settings.data_dir, WINDOWS) as sink:
+        sink.append(Sample(ts=NOW, up_bid=0.50, up_ask=0.51, tau_s=100.0))
+        sink.flush()
+
+    panel = history.book_panel(settings.data_dir, 6, NOW + timedelta(minutes=1), tick=0.01)
+    assert panel["at_floor"] == 1.0
+    assert panel["ticks_seen"] == [0.01], "el respaldo de la configuración"
+
+
+def test_el_desbordamiento_no_se_esconde(settings: Settings) -> None:
+    """Un libro que se abre a 80¢ dice cuándo NO se puede cotizar. Ocultarlo adorna."""
+    with ParquetSink(settings.data_dir, WINDOWS) as sink:
+        sink.append(Sample(ts=NOW, up_bid=0.10, up_ask=0.90, up_tick=0.01, tau_s=50.0))
+        sink.flush()
+
+    panel = history.book_panel(settings.data_dir, 6, NOW + timedelta(minutes=1), tick=0.01)
+    overflow = [row for row in panel["by_tick"] if row["overflow"]]
+    assert len(overflow) == 1
+    assert overflow[0]["count"] == 1
+    assert panel["stats"]["max"] == pytest.approx(0.80)
+    assert panel["at_floor"] == 0.0
+
+
+def test_el_spread_por_tau_usa_los_mismos_cortes_que_el_edge(settings: Settings) -> None:
+    """Las dos tablas se leen fila a fila: con cortes distintos no significarían nada."""
+    write_hour(settings.data_dir, NOW - timedelta(minutes=30))
+    book = history.book_panel(settings.data_dir, 6, NOW, tick=0.01)
+    edge = history.edge_panel(settings.data_dir, 6, [history.Window("w60")], NOW)
+
+    cortes_book = [(r["low"], r["high"]) for r in book["by_tau"]]
+    cortes_edge = [(r["low"], r["high"]) for r in edge["windows"]["w60"]["by_tau"]]
+    assert cortes_book == cortes_edge == list(history.TAU_BUCKETS)
+
+
+def test_la_complementariedad_delata_un_libro_roto(settings: Settings) -> None:
+    """Los dos outcomes suman 1. Cuando no, casi siempre es el feed, no una oportunidad."""
+    with ParquetSink(settings.data_dir, WINDOWS) as sink:
+        sink.append(
+            Sample(ts=NOW, up_bid=0.50, up_ask=0.52, down_bid=0.48, down_ask=0.50, tau_s=100.0)
+        )
+        sink.append(
+            Sample(
+                ts=NOW + timedelta(seconds=1),
+                up_bid=0.50,
+                up_ask=0.52,
+                down_bid=0.70,
+                down_ask=0.72,
+                tau_s=99.0,
+            )
+        )
+        sink.flush()
+
+    panel = history.book_panel(settings.data_dir, 6, NOW + timedelta(minutes=1), tick=0.01)
+    assert panel["complementarity"]["n"] == 2
+    # up_mid=0.51 con down_mid=0.71 suman 1.22: el libro no cuadra por 22¢.
+    assert panel["complementarity"]["max"] == pytest.approx(0.22), "el libro descuadrado"
+    assert panel["complementarity"]["min"] == pytest.approx(0.0)
+
+
+def test_el_panel_de_spread_llega_al_api_y_tolera_no_tener_datos(settings: Settings) -> None:
+    """Los endpoints leen del reloj real, así que el fixture se escribe en la hora de verdad."""
+    with TestClient(create_app(settings)) as client:
+        vacio = client.get("/api/book").json()
+        assert vacio["samples"] == 0
+        assert vacio["tick"] == float(settings.default_tick_size)
+
+    write_hour(settings.data_dir, datetime.now(UTC) - timedelta(minutes=2), rows=30)
+    with TestClient(create_app(settings)) as client:
+        panel = client.get("/api/book?hours=6").json()
+    assert panel["samples"] == 30
+    assert panel["stats"]["mean"] == pytest.approx(0.02), "el fixture escribe 0.50/0.52"
+    assert panel["at_floor"] == 0.0, "2¢ no es el suelo de 1¢"
 
 
 def test_solo_se_leen_las_horas_pedidas(settings: Settings) -> None:

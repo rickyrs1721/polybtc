@@ -13,3 +13,8 @@ __pycache__/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+
+# macOS: Finder los siembra en cualquier carpeta que se abra, así que aparecen solos
+# y sin avisar. No son secretos, pero sí son exactamente el tipo de archivo que un
+# `git add -A` distraído mete en un commit de código.
+.DS_Store

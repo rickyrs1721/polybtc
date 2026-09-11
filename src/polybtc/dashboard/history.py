@@ -187,6 +187,92 @@ def edge_panel(root: Path, hours: int, windows: Sequence[Window], now: datetime)
     return result
 
 
+SPREAD_RESOLUTION = 0.001
+"""Resolución del histograma de spread, en unidades de precio.
+
+Fija en 0,001 —el tick más fino que usa la plataforma— y NO igual al tick vigente, que es
+lo que parecía natural. El motivo: el tick sigue al precio (0,01 cerca del medio, 0,001
+cerca de los extremos), así que un histograma en «múltiplos del tick» mezclaría dos escalas
+distintas en las mismas barras y un 1 significaría 1¢ en unas filas y 0,1¢ en otras.
+"""
+
+SPREAD_MAX_BUCKETS = 20
+"""Hasta 2¢ con detalle; por encima, un bucket de desbordamiento."""
+
+
+def book_panel(root: Path, hours: int, now: datetime, *, tick: float) -> dict[str, Any]:
+    """Distribución del spread y salud del libro. Pregunta 1 de §6 — y coartada de la 6.
+
+    La pregunta 1 («¿cuál es la distribución del spread?») parece la menos interesante de
+    las seis y es la que sostiene a las otras dos:
+
+    **Es el techo de lo que se puede capturar.** Un maker se pone DENTRO del spread, así
+    que lo que aspira a ganar está acotado por su mitad. Leer «|fair − mid| supera 3¢ el X%
+    del tiempo» sin mirar el spread al lado es leer la pregunta 2 de más.
+
+    **Y es lo único que distingue dos lecturas opuestas de la pregunta 6.** Si `|fair−mid|`
+    crece cuando `τ` baja, eso puede ser edge de modelo o puede ser que el libro se vacíe y
+    el `mid` deje de significar nada. Son indistinguibles en los datos salvo que se mire el
+    spread por el MISMO bucket de τ. Por eso `by_tau` usa aquí los mismos cortes que
+    `edge_panel`: las dos tablas están hechas para leerse fila a fila.
+
+    **«Pegado al suelo» se juzga contra el tick GRABADO en cada fila, no contra uno fijo.**
+    El tick sigue al precio: medido el 2026-09-11, una época deep-OTM cotizaba con `0.001` y
+    tres épocas a la vez en torno a `0.51` con `0.01`. Un spread de medio céntimo es un libro
+    pegado al suelo en régimen fino y un libro imposible en régimen grueso — la misma cifra,
+    dos lecturas opuestas. `tick` solo es el respaldo para las filas que no lo tengan.
+    """
+    data = load(root, hours, ["up_bid", "up_ask", "down_bid", "down_ask", "up_tick", "tau_s"], now)
+    spreads: list[float] = []
+    pairs: list[tuple[float, float]] = []
+    at_floor_flags: list[bool] = []
+    floor_by_tau: list[tuple[bool, float]] = []
+    complementarity: list[float] = []
+    ticks_seen: set[float] = set()
+
+    for up_bid, up_ask, down_bid, down_ask, up_tick, tau in zip(
+        data["up_bid"],
+        data["up_ask"],
+        data["down_bid"],
+        data["down_ask"],
+        data["up_tick"],
+        data["tau_s"],
+        strict=True,
+    ):
+        if up_bid is not None and up_ask is not None:
+            spread = up_ask - up_bid
+            row_tick = up_tick if up_tick else tick
+            ticks_seen.add(row_tick)
+            # Medio tick de margen para no castigar el redondeo del float; un libro al suelo
+            # vale exactamente un tick y el siguiente escalón está a dos.
+            at_floor = spread <= row_tick * 1.5
+            spreads.append(spread)
+            at_floor_flags.append(at_floor)
+            if tau is not None:
+                pairs.append((spread, tau))
+                floor_by_tau.append((at_floor, tau))
+        up_mid = _mid(up_bid, up_ask)
+        down_mid = _mid(down_bid, down_ask)
+        if up_mid is not None and down_mid is not None:
+            # Los dos outcomes de una binaria tienen que sumar 1. Cuando no lo hacen, o hay
+            # una oportunidad real o —mucho más probable— algo va mal en el feed del libro.
+            # Es un canario de calidad de datos, y en 14 días se quiere ver el día 1.
+            complementarity.append(up_mid + down_mid - 1.0)
+
+    return {
+        "hours": hours,
+        "tick": tick,
+        "ticks_seen": sorted(ticks_seen),
+        "samples": len(spreads),
+        "stats": _describe(spreads),
+        "at_floor": _share(at_floor_flags),
+        "resolution": SPREAD_RESOLUTION,
+        "by_tick": _spread_histogram(spreads),
+        "by_tau": _spread_by_tau(pairs, floor_by_tau),
+        "complementarity": _describe(complementarity),
+    }
+
+
 # -- interno ---------------------------------------------------------------------------
 
 
@@ -270,6 +356,56 @@ def _histogram(values: Sequence[float], bins: int = 40, top: float = 0.20) -> di
         "edges": [i * width for i in range(bins + 1)],
         "counts": counts,
     }
+
+
+def _share(flags: Sequence[bool]) -> float | None:
+    if not flags:
+        return None
+    return sum(1 for flag in flags if flag) / len(flags)
+
+
+def _spread_histogram(spreads: Sequence[float]) -> list[dict[str, Any]]:
+    """Cuenta de spreads en escalones de `SPREAD_RESOLUTION`, con desbordamiento al final.
+
+    El desbordamiento no se descarta: un libro que a veces se abre a 20¢ es información
+    sobre cuándo NO se puede cotizar, y esconderlo en el eje daría una distribución más
+    bonita y menos cierta.
+    """
+    counts = [0] * (SPREAD_MAX_BUCKETS + 1)
+    for spread in spreads:
+        index = min(SPREAD_MAX_BUCKETS, max(0, round(spread / SPREAD_RESOLUTION)))
+        counts[index] += 1
+    total = len(spreads) or 1
+    return [
+        {
+            "steps": i,
+            "spread": i * SPREAD_RESOLUTION,
+            "overflow": i == SPREAD_MAX_BUCKETS,
+            "count": count,
+            "share": count / total,
+        }
+        for i, count in enumerate(counts)
+    ]
+
+
+def _spread_by_tau(
+    pairs: Sequence[tuple[float, float]], floors: Sequence[tuple[bool, float]]
+) -> list[dict[str, Any]]:
+    """Spread medio por bucket de τ. Mismos cortes que `_by_tau`: van juntas o no sirven."""
+    rows: list[dict[str, Any]] = []
+    for low, high in TAU_BUCKETS:
+        values = [spread for spread, tau in pairs if low < tau <= high]
+        flags = [flag for flag, tau in floors if low < tau <= high]
+        rows.append(
+            {
+                "low": low,
+                "high": high,
+                "samples": len(values),
+                "mean": None if not values else sum(values) / len(values),
+                "at_floor": _share(flags),
+            }
+        )
+    return rows
 
 
 def _by_tau(pairs: Sequence[tuple[float, float]]) -> list[dict[str, Any]]:

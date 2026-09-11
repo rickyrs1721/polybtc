@@ -121,7 +121,17 @@
   </section>
 
   <section class="wide">
-    <h2>|fair − mid| por bucket de τ <small>Fase 0 · pregunta 6 — si solo aparece bajo 30 s, es latencia (§2.3)</small></h2>
+    <h2>Spread del libro <small>Fase 0 · pregunta 1 — el techo de lo que un maker puede capturar</small></h2>
+    <div id="spread-wrap"></div>
+  </section>
+
+  <section class="wide">
+    <h2>|fair − mid| y spread por bucket de τ <small>Fase 0 · pregunta 6 — si solo aparece bajo 30 s, es latencia (§2.3)</small></h2>
+    <p class="t-dim" style="margin:0 0 10px">
+      Las dos magnitudes van en la misma fila a propósito: un |fair − mid| que crece al bajar τ
+      puede ser edge de modelo o puede ser que el libro se vacíe y el mid deje de significar
+      nada. Solo se distinguen mirando el spread del mismo bucket.
+    </p>
     <div id="tau-wrap"></div>
   </section>
 </main>
@@ -284,8 +294,32 @@ function histogramSvg(h, fee, cushion) {
   </svg>`;
 }
 
+// Histograma discreto: el spread solo puede valer múltiplos del tick, así que se cuenta
+// por múltiplo. Bins arbitrarios enseñarían picos que son del binning, no del mercado.
+// Histograma discreto en escalones de 0,1¢: el spread solo puede valer múltiplos del tick,
+// y el tick cambia con el precio (0,01 cerca del medio, 0,001 en los extremos). La escala
+// fija es lo que hace comparables los dos regímenes en las mismas barras.
+function tickBarsSvg(rows) {
+  const W = 1160, H = 140;
+  const max = Math.max(...rows.map((r) => r.count), 1);
+  const bw = W / rows.length;
+  return `<svg viewBox="0 0 ${W} ${H + 16}" height="${H + 16}">` + rows.map((r, i) => {
+    const h = (r.count / max) * H;
+    const color = r.overflow ? "#d0524f" : r.count ? "#5b8dd9" : "#262b36";
+    const label = i % 5 === 0 || r.overflow
+      ? `<text x="${(i * bw + bw / 2).toFixed(1)}" y="${H + 12}" fill="#8a93a6"
+          font-size="10" text-anchor="middle">${r.overflow ? "≥" : ""}${(r.spread * 100).toFixed(1)}¢</text>`
+      : "";
+    return `<rect x="${(i * bw + 1).toFixed(1)}" y="${(H - h).toFixed(1)}"
+             width="${(bw - 2).toFixed(1)}" height="${h.toFixed(1)}" fill="${color}"/>${label}`;
+  }).join("") + `</svg>`;
+}
+
 async function renderEdge() {
-  const data = await (await fetch("/api/edge")).json();
+  const [data, bookData] = await Promise.all([
+    (await fetch("/api/edge")).json(),
+    (await fetch("/api/book")).json(),
+  ]);
   const entries = Object.entries(data.windows);
 
   $("hist-wrap").innerHTML = entries.map(([label, w]) => `
@@ -296,15 +330,35 @@ async function renderEdge() {
       ${w.samples ? histogramSvg(w.histogram, data.fee_taker, data.cushion) : '<div class="t-dim">sin datos</div>'}
     </div>`).join("");
 
+  const comp = bookData.complementarity;
+  const ticks = (bookData.ticks_seen || []).map(cents).join(" / ") || "·";
+  $("spread-wrap").innerHTML = bookData.samples ? `
+    <div class="t-dim">${bookData.samples} muestras · media ${cents(bookData.stats.mean)} ·
+      p50 ${cents(bookData.stats.p50)} · máx ${cents(bookData.stats.max)} ·
+      <b class="${bookData.at_floor > 0.5 ? "t-ok" : "t-warn"}">pegado al tick ${pct(bookData.at_floor)}</b>
+      · ticks vistos ${ticks}
+      &nbsp;|&nbsp; complementariedad up+down−1: media ${cents(comp.mean)} · máx ${cents(comp.max)}</div>
+    ${tickBarsSvg(bookData.by_tick)}
+    <div class="legend">
+      <span><i class="swatch" style="background:#d0524f"></i>desbordamiento: libro abierto, no se cotiza</span>
+      <span>«pegado al tick» se juzga contra el tick de cada fila: el tick sigue al precio</span>
+    </div>` : '<div class="t-dim">sin datos</div>';
+
+  const spreadByTau = Object.fromEntries(bookData.by_tau.map((r) => [`${r.low}-${r.high}`, r]));
   $("tau-wrap").innerHTML = entries.map(([label, w]) => `
     <div style="margin-bottom:14px">
       <div class="t-dim">ventana ${label}</div>
       <table>
-        <tr><th>τ (s)</th><th>muestras</th><th>media</th><th>&gt;1,75¢</th><th>&gt;3¢</th></tr>
-        ${w.by_tau.map((r) => `<tr>
-          <td>${r.low}–${r.high}${r.high <= 30 ? ' <span class="t-bad">latencia</span>' : ""}</td>
-          <td>${r.samples}</td><td>${cents(r.mean)}</td>
-          <td>${pct(r.above_fee)}</td><td>${pct(r.above_cushion)}</td></tr>`).join("")}
+        <tr><th>τ (s)</th><th>muestras</th><th>|fair−mid|</th><th>&gt;1,75¢</th><th>&gt;3¢</th>
+            <th>spread</th><th>al tick</th></tr>
+        ${w.by_tau.map((r) => {
+          const s = spreadByTau[`${r.low}-${r.high}`] || {};
+          return `<tr>
+            <td>${r.low}–${r.high}${r.high <= 30 ? ' <span class="t-bad">latencia</span>' : ""}</td>
+            <td>${r.samples}</td><td>${cents(r.mean)}</td>
+            <td>${pct(r.above_fee)}</td><td>${pct(r.above_cushion)}</td>
+            <td>${cents(s.mean)}</td><td>${pct(s.at_floor)}</td></tr>`;
+        }).join("")}
       </table>
     </div>`).join("");
 }
