@@ -1,0 +1,61 @@
+[Unit]
+Description=polybtc — dashboard de la Fase 0 (solo lectura)
+Documentation=https://github.com/rickyrs1721/polybtc
+After=network-online.target
+Wants=network-online.target
+
+# A propósito NO lleva `Requires=polybtc-recorder.service`: son dos procesos independientes
+# y el dashboard tiene que poder arrancar antes que el grabador y sobrevivir a que se
+# reinicie. Si el dashboard revienta, el grabador sigue escribiendo; es el criterio de
+# salida del sprint que lo construyó.
+
+[Service]
+Type=simple
+User=polybtc
+Group=polybtc
+WorkingDirectory=/opt/polybtc
+EnvironmentFile=/etc/polybtc/polybtc.env
+ExecStart=/opt/polybtc/.venv/bin/python -m polybtc.dashboard
+
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+MemoryMax=512M
+
+# Este servicio no escribe nada: abre `state.db` con una conexión `mode=ro` y lee los
+# Parquet. Aun así lleva ReadWritePaths, y NO es un descuido — es un detalle de SQLite que
+# se comprobó antes de escribir esta línea:
+#
+#   Una base en modo WAL necesita su archivo `-shm` incluso para LEERLA. Mientras el
+#   grabador está vivo, el lector se engancha al `-shm` que aquél mantiene abierto y todo
+#   funciona; pero en cuanto el grabador se cierra, SQLite hace checkpoint y borra el
+#   `-shm`. A partir de ahí, abrir la base —aunque sea en `mode=ro`— exige poder crearlo.
+#   Con el sistema de ficheros en solo lectura, esa apertura falla.
+#
+#   Medido: con el escritor muerto y el directorio en solo lectura, la lectura devuelve
+#   «no hay datos». Es decir, el dashboard diría «sin grabador» justo cuando el grabador
+#   se está reiniciando, que es cuando más falta hace mirarlo. Un fallo que miente.
+#
+# La garantía de que el dashboard no puede escribir sigue en pie y es la del motor, no la
+# del sistema de ficheros: con `mode=ro`, un UPDATE devuelve «attempt to write a readonly
+# database». Está cubierto por un test.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/polybtc
+
+# Confinado al bucle local: este servicio no habla con el exterior, solo lee archivos y
+# sirve una página en 127.0.0.1. Se mira por túnel SSH, nunca expuesto.
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,48 @@
+[Unit]
+Description=polybtc — grabador de la Fase 0 (§6)
+Documentation=https://github.com/rickyrs1721/polybtc
+After=network-online.target chrony.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=polybtc
+Group=polybtc
+WorkingDirectory=/opt/polybtc
+EnvironmentFile=/etc/polybtc/polybtc.env
+
+# Se ejecuta el intérprete del venv directamente, no `uv run`. Así el arranque no depende
+# de la red ni de resolver dependencias a las 3 de la mañana del día 9 de la Fase 0.
+ExecStart=/opt/polybtc/.venv/bin/python -m polybtc.recorder
+
+Restart=always
+RestartSec=5
+
+# El apagado ordenado tarda entre 6 y 16 segundos medidos: son los tres WebSockets cerrando
+# su handshake antes de que se vuelque el buffer y la hora en curso se convierta a Parquet.
+# Un plazo corto aquí mataría el proceso a media escritura, que es justo lo que el diseño
+# de `recorder/sink.py` existe para evitar.
+KillSignal=SIGTERM
+TimeoutStopSec=90
+
+# Guardarraíl contra una fuga lenta: medido, el grabador vive en 115 MB. Con 1 GB hay ocho
+# veces de margen y aun así el proceso muere antes de llevarse la máquina por delante — y
+# `Restart=always` lo vuelve a levantar.
+MemoryMax=1G
+
+# Endurecimiento. Lo único que este servicio necesita escribir es el directorio de datos.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/polybtc
+
+[Install]
+WantedBy=multi-user.target

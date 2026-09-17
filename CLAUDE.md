@@ -183,6 +183,32 @@ de minutos. Ir de taker aquí es pelear contra el diseño del producto.
   excepción a la georrestricción que **no está documentada**: no cuentes con ella sin
   confirmación escrita de ellos. Planifica sobre `eu-west-1`.)
 - Desde Perú son ~180-220 ms RTT. Con VPS en `eu-west-1`, ~1-10 ms.
+
+> **Hay DOS listas de close-only y confundirlas cuesta una mudanza.** Verificado en
+> `docs.polymarket.com/api-reference/geoblock.md` el 2026-09-17, y copiado a
+> `deploy/geoblock.py` con esa fecha:
+>
+> | Lista | Qué permite | Quién está |
+> | --- | --- | --- |
+> | Bloqueo total (OFAC) | nada | Irán, Siria, Cuba, Corea del Norte, regiones de Ucrania |
+> | **Close-only en frontend Y API** | **el bot NO abre posiciones** | **Francia, Alemania**, Reino Unido, Italia, Polonia, Singapur, EE. UU., Australia, Brasil, Canadá (varias provincias)… |
+> | Close-only solo en frontend | la API queda libre: el bot funciona | Irlanda, **Países Bajos**, Japón, Corea del Sur, Malta |
+> | No aparece | sin restricción | Finlandia, España, Lituania, Portugal, Perú… |
+>
+> Esto es lo que hace que §2.3 señalara `eu-west-1`: **Irlanda está en la lista blanda**, no
+> es que estuviera libre. Y tiene una consecuencia incómoda que este documento no recogía:
+> **Francia y Alemania están en la lista dura**, que es donde tienen su datacenter europeo
+> casi todos los proveedores baratos. Un VPS en Fráncfort o en Lauterbourg graba la Fase 0
+> perfectamente y **no puede abrir una posición en el Sprint 7**.
+>
+> No afecta a la Fase 0 —grabar no es operar y los feeds son públicos—, pero decide dónde
+> montar la máquina definitiva: mudarse entre el Sprint 4 y el 7 cambia el perfil de
+> latencia con el que se midieron 14 días. `deploy/preflight.py` lo comprueba desde la IP
+> real antes de comprometer ningún plazo.
+>
+> El campo `blocked` que devuelve `polymarket.com/api/geoblock` refleja la política del
+> **frontend**: sale `true` en sitios desde los que la API sí funciona. Se enruta por
+> `country`, no por ese booleano.
 - Algunos mercados aplican **retardo de matching deliberado**. Lee
   `market.trading.seconds_delay` antes de asumir cualquier ventaja de velocidad.
   Un status `delayed` en la respuesta **no es un fill**: trátalo como pendiente y sigue
@@ -413,6 +439,14 @@ polybtc/
 │   ├── tail_feeds.py            # una línea/s con precios, basis y edad de cada feed.
 │   │                            #   Es donde se hace la prueba del corte de red.
 │   └── find_market.py           # herramienta de consola sobre feeds/discovery.py
+├── deploy/                      # despliegue: un script versionado, NO un agente con SSH
+│   ├── preflight.py             # decide si una máquina sirve ANTES de pagar el plazo
+│   ├── bootstrap.sh             # idempotente: rehace la máquina desde cero en 5 min
+│   ├── geoblock.py              # las tres listas de restricción de Polymarket (§2.3)
+│   ├── soak_report.py           # veredicto de 24 h: ¿empieza el contador de 14 días?
+│   ├── pull_data.sh             # respaldo en modo PULL, se ejecuta desde tu máquina
+│   ├── polybtc-{recorder,dashboard}.service
+│   └── README.md                # runbook por fases
 ├── data/                        # NO versionado
 │   ├── YYYY/MM/DD/HH.parquet    # una fila por segundo. SIEMPRE completo y legible
 │   ├── YYYY/MM/DD/HH.arrow.part # hora en curso. Es el almacén durable real
@@ -834,3 +868,23 @@ conjunto de datos en dos.
 | 4 | Grabador: columnas `up_tick` y `down_tick` por fila | Medio céntimo de spread es un libro al suelo con tick 0.001 y uno imposible con 0.01. Sin el tick grabado, la pregunta 1 de §6 no se puede responder |
 | 6 | Dashboard: panel de spread, por bucket de τ junto a \|fair − mid\| | La pregunta 1 es el techo de lo que un maker captura, y es lo único que distingue «hay edge a τ bajo» de «el libro se vacía y el mid deja de significar nada» (pregunta 6) |
 | 6 | Dashboard: chequeo de complementariedad `up_mid + down_mid − 1` | Canario de calidad del feed de libro. En 14 días eso se quiere ver el día 1, no el día 15 |
+
+### v2.6 — al preparar el despliegue (septiembre 2026)
+
+El despliegue obligó a leer la página de geobloqueo con lupa, y ahí había un matiz que este
+documento daba por resuelto de una forma que no era.
+
+| § | Cambio | Motivo |
+| --- | --- | --- |
+| 2.3 | **Nuevo**: las DOS listas de close-only, literales y fechadas | §2.3 decía «región más cercana no georrestringida: Irlanda» sin decir por qué. La razón es que Irlanda está en la lista **blanda** (solo frontend), mientras que **Francia y Alemania están en la dura**: desde ahí el bot no abre posiciones, y es donde tienen datacenter europeo casi todos los proveedores baratos |
+| 4 | Árbol: añadido `deploy/` | Preflight, bootstrap idempotente, unidades de systemd, respaldo en pull e informe de soak |
+| 6 | **Nuevo**: el soak de 24 h es una compuerta antes de los 14 días | El grabador nunca había corrido más de 22 min seguidos ni cruzado en vivo un cambio de hora, que es cuando cierra el Parquet |
+
+Y tres detalles que solo aparecieron al ejecutar el preflight de verdad, los tres con
+fallo silencioso o engañoso:
+
+| Detalle | Qué pasaba |
+| --- | --- |
+| `urllib` sin `User-Agent` recibe **403** del borde de Cloudflare | Parecía un geobloqueo. Un preflight que confunde «me han bloqueado» con «no me he presentado» descarta una máquina buena |
+| El RTT a los endpoints de Polymarket mide **el nodo de borde de la CDN**, no el mercado | Desde Perú: 59 ms a Polymarket y 246 ms a Binance, con Londres a ~180 ms. Sirve para comparar dos máquinas candidatas, no como medida absoluta |
+| El dashboard necesita `ReadWritePaths` pese a abrir `state.db` en `mode=ro` | Una base en WAL necesita su `-shm` **para leerla**. Con el escritor muerto y el sistema de ficheros en solo lectura, la lectura falla y el panel diría «sin grabador» justo cuando el grabador se reinicia |

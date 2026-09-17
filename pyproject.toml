@@ -42,7 +42,7 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["src", "tests"]
+src = ["src", "tests", "deploy"]
 
 [tool.ruff.lint]
 select = [
@@ -71,6 +71,7 @@ ignore = [
 "src/polybtc/research/*" = ["T20"]  # los notebooks de Fase 0 sí imprimen
 "tests/*" = ["T20"]
 "scripts/*" = ["T20"]  # tail_feeds.py es una herramienta de consola: imprimir es su trabajo
+"deploy/*" = ["T20"]   # el preflight y el informe del soak son informes: su salida ES el producto
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -83,7 +84,7 @@ exclude = ["*.md"]
 
 [tool.mypy]
 python_version = "3.12"
-files = ["src", "tests", "scripts"]
+files = ["src", "tests", "scripts", "deploy"]
 strict = true
 warn_unreachable = true
 warn_no_return = true
