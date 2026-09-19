@@ -175,6 +175,47 @@ def check_geoblock() -> Check:
     return Check("Geobloqueo", Verdict.PASS, f"{where}: {standing.value}")
 
 
+# -- 1.b Ruta IPv4 ------------------------------------------------------------------------
+
+IPV4_ONLY_HOST = ("stream.binance.com", 9443)
+"""Binance **no publica AAAA**: su stream es IPv4 puro (comprobado el 2026-09-18).
+
+Importa porque varios proveedores venden la máquina más barata **sin IPv4**, cobrando aparte
+la dirección pública. En una máquina IPv6-only, Polymarket funciona —sus endpoints son
+dual-stack— y Binance no. Y eso no se cae con estrépito: el grabador arranca, RTDS emite, y
+`binance_direct` simplemente no se actualiza nunca.
+
+Sin Binance no hay spot, sin spot no hay σ (§3.4) ni corrección de basis (§2.1.b), y sin
+basis no hay fair. Catorce días grabando precios de Chainlink y ninguna respuesta a la
+pregunta 2 de §6. **La IPv4 no es opcional en este proyecto.**
+"""
+
+
+def check_ipv4() -> Check:
+    """¿Llega esta máquina a un endpoint que solo existe en IPv4?"""
+    host, port = IPV4_ONLY_HOST
+    try:
+        infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+    except socket.gaierror as error:
+        return Check("Ruta IPv4", Verdict.FAIL, f"{host} no resuelve por IPv4: {error}")
+    if not infos:
+        return Check("Ruta IPv4", Verdict.FAIL, f"{host} sin direcciones IPv4")
+
+    family, socktype, proto, _, address = infos[0]
+    try:
+        with socket.socket(family, socktype, proto) as sock:
+            sock.settimeout(5)
+            sock.connect(address)
+    except OSError as error:
+        return Check(
+            "Ruta IPv4",
+            Verdict.FAIL,
+            f"sin salida IPv4 hacia {host} ({error}). Binance es IPv4 puro: en una máquina "
+            "IPv6-only te quedas sin spot, sin σ y sin basis — o sea, sin fair",
+        )
+    return Check("Ruta IPv4", Verdict.PASS, f"salida IPv4 hacia {host} correcta")
+
+
 # -- 2. Reloj ---------------------------------------------------------------------------
 
 
@@ -430,7 +471,7 @@ async def main() -> int:
     settings = Settings()
     print(f"preflight · {datetime.now(UTC).isoformat(timespec='seconds')}\n")
 
-    checks = [check_geoblock(), check_clock()]
+    checks = [check_geoblock(), check_ipv4(), check_clock()]
     endpoint_checks, rtts = measure_endpoints()
     checks += endpoint_checks
     checks.append(check_differential(rtts))
