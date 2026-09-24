@@ -116,6 +116,13 @@ log "Entorno de Python"
 # entre tu máquina y el VPS es cómo se descubre en el día 9 que el servidor lleva otra
 # versión del SDK.
 cd "${APP_DIR}"
+
+# El Python lo pone uv, NO el del sistema, y se instala en un paso aparte para que un fallo
+# aquí se vea aquí. `.python-version` fija 3.12: una imagen reciente de Ubuntu trae un
+# Python más nuevo del que puede haber ruedas de `pyarrow`, y sin ruedas uv intentaría
+# compilarlo desde fuente en una máquina de 2 vCPU. Eso no falla rápido: falla en veinte
+# minutos y con un error de compilador.
+sudo -u "${APP_USER}" env HOME="/home/${APP_USER}" "${UV_BIN}" python install
 sudo -u "${APP_USER}" env HOME="/home/${APP_USER}" "${UV_BIN}" sync --frozen --no-dev
 sudo -u "${APP_USER}" "${APP_DIR}/.venv/bin/python" -c \
   "import polybtc, sys; print(f'    polybtc listo sobre Python {sys.version.split()[0]}')"
