@@ -55,7 +55,14 @@ log "Cortafuegos: solo SSH"
 # el estado interno del sistema y no tiene autenticación de ninguna clase.
 ufw --force default deny incoming >/dev/null
 ufw --force default allow outgoing >/dev/null
-ufw allow OpenSSH >/dev/null
+# Las dos reglas, y no es redundancia inútil: `OpenSSH` es un perfil de aplicación que
+# puede no existir en una imagen mínima, y `ufw allow` de un perfil inexistente falla. Con
+# `set -e` eso abortaría antes de activar el cortafuegos —que es el lado seguro— pero
+# dejaría el bootstrap a medias. El puerto explícito no depende de ningún perfil.
+# Quedarse fuera de la máquina es el único error de este script que no se puede arreglar
+# desde la máquina.
+ufw allow 22/tcp >/dev/null
+ufw allow OpenSSH >/dev/null 2>&1 || true
 ufw --force enable >/dev/null
 ufw status verbose | sed 's/^/    /'
 
