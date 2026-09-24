@@ -105,6 +105,16 @@ fi
 # ---------------------------------------------------------------------------
 log "Repositorio en ${APP_DIR}"
 # ---------------------------------------------------------------------------
+# El repo lo clona **root**, porque es quien puede leer la deploy key de /root/.ssh, pero
+# los archivos acaban siendo de `polybtc`, que es quien tiene que escribir el `.venv`. Esa
+# combinación —directorio de otro usuario, git ejecutado por root— es justo lo que git
+# bloquea desde CVE-2022-24765 con «detected dubious ownership».
+#
+# Aquí la advertencia no aplica: el directorio es de un usuario de servicio que creamos
+# nosotros tres líneas más arriba, no de un tercero. Sin esta excepción el `git fetch` de
+# la segunda ejecución falla, y con él la idempotencia, que es la razón de ser del script.
+git config --global --add safe.directory "${APP_DIR}"
+
 if [[ -d "${APP_DIR}/.git" ]]; then
   git -C "${APP_DIR}" remote set-url origin "${REPO}"
   git -C "${APP_DIR}" fetch --quiet origin "${REF}"
