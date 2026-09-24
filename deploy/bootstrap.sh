@@ -70,9 +70,22 @@ ufw status verbose | sed 's/^/    /'
 log "SSH: solo con llave"
 # ---------------------------------------------------------------------------
 install -d -m 0755 /etc/ssh/sshd_config.d
+# `prohibit-password`, NO `no`. Esta línea ya se cobró una máquina.
+#
+# Con `PermitRootLogin no` el servidor acepta tu clave y aun así rechaza la sesión, y el
+# único usuario que el script crea —`polybtc`— tiene `nologin` porque es una cuenta de
+# servicio. Resultado: el bootstrap cierra la única puerta que hay, desde dentro, y para
+# volver a entrar hace falta la consola web del proveedor y restablecer la contraseña de
+# root. Lo hizo en la primera ejecución real.
+#
+# `prohibit-password` es el endurecimiento que sí corresponde aquí: root entra solo con
+# clave, nunca con contraseña, y junto a `PasswordAuthentication no` no queda ninguna vía
+# de contraseña abierta. Deshabilitar root del todo es defendible, pero exige crear antes
+# un usuario administrador con sudo y su propia clave — y eso es un cambio de runbook, no
+# una línea suelta en un script de arranque.
 cat > /etc/ssh/sshd_config.d/10-polybtc.conf <<'SSHD'
 # Escrito por deploy/bootstrap.sh
-PermitRootLogin no
+PermitRootLogin prohibit-password
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 SSHD
