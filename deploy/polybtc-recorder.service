@@ -9,6 +9,11 @@ Type=simple
 User=polybtc
 Group=polybtc
 WorkingDirectory=/opt/polybtc
+# HOME explícito: systemd lo tomaría de /etc/passwd (/home/polybtc), y `ProtectHome=yes`
+# hace que esa ruta dé **PermissionError** en vez de «no existe». `config.py` mira ahí la
+# ruta de secretos de §0, y pydantic-settings tolera un archivo ausente pero no uno
+# ilegible: los dos servicios entraban en bucle de reinicio por eso.
+Environment=HOME=/var/lib/polybtc
 EnvironmentFile=/etc/polybtc/polybtc.env
 
 # Se ejecuta el intérprete del venv directamente, no `uv run`. Así el arranque no depende

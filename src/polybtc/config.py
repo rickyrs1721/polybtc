@@ -21,6 +21,25 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 SECRETS_ENV_PATH = Path.home() / ".polybtc" / ".env"
 """Fuera del repo a propósito (§0). No se crea aquí; no hace falta hasta el Sprint 7."""
 
+
+def _accessible(path: Path) -> bool:
+    """¿Se puede siquiera mirar esta ruta?
+
+    Bajo `systemd` con `ProtectHome=yes`, `/home` no es que esté vacío: es que `stat`
+    devuelve **PermissionError**, no `FileNotFoundError`. pydantic-settings tolera un
+    `env_file` que no existe y revienta con uno que no puede mirar, así que ambos
+    servicios entraban en bucle de reinicio por un archivo de secretos que en la Fase 0 ni
+    siquiera debe existir.
+
+    Las unidades fijan `HOME` a un directorio accesible, así que esto es el cinturón: si
+    alguien ejecuta el grabador de otra forma, arranca igual en vez de caerse.
+    """
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 """Raíz del repo. `data/` cuelga de aquí y NO se versiona (§4)."""
 
@@ -29,7 +48,7 @@ class Settings(BaseSettings):
     """Configuración del proceso. Se instancia una vez y se pasa hacia abajo."""
 
     model_config = SettingsConfigDict(
-        env_file=(SECRETS_ENV_PATH,),
+        env_file=tuple(p for p in (SECRETS_ENV_PATH,) if _accessible(p)),
         env_prefix="POLYBTC_",
         extra="ignore",
     )
