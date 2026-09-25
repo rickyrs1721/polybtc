@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sqlite3
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -28,6 +30,9 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from polybtc.model.binary import delta_per_dollar
+from polybtc.model.twap import terminal_variance
+from polybtc.model.vol import deannualize
 from polybtc.recorder.sink import PART_SUFFIX, read_part
 
 # -- Umbrales, escritos antes de correr nada -------------------------------------------
@@ -77,6 +82,19 @@ class Check:
     def render(self) -> str:
         mark = {Verdict.PASS: "·", Verdict.WARN: "!", Verdict.FAIL: "X"}[self.verdict]
         return f" {mark} {self.verdict.value:<6} {self.name:<32} {self.detail}"
+
+
+def _describe(values: Sequence[float]) -> dict[str, float]:
+    """Media, desviación y extremos. Local a propósito: esta herramienta corre sola."""
+    mean = sum(values) / len(values)
+    variance = sum((v - mean) ** 2 for v in values) / len(values)
+    return {
+        "n": float(len(values)),
+        "mean": mean,
+        "std": math.sqrt(variance),
+        "min": min(values),
+        "max": max(values),
+    }
 
 
 def _verdict(value: float, warn: float, fail: float, *, higher_is_better: bool) -> Verdict:
@@ -229,6 +247,96 @@ def check_health(table: pa.Table) -> list[Check]:
             )
         )
     return checks
+
+
+def check_spots(table: pa.Table) -> list[Check]:
+    """Compara los dos spots contra el oráculo. Es lo que decide `spot_source`.
+
+    La magnitud que importa **no es el nivel del basis sino su DISPERSIÓN**. §2.1.c ya lo
+    dejó dicho: un basis grande pero estable lo sigue el estimador de §2.1.b sin problema;
+    uno que se mueve es un ancla suelta, y el residuo entra entero en `ln(S/K)`.
+
+    Se traduce a céntimos de fair porque es la única unidad comparable contra el colchón de
+    3¢ de §3.5. Un dólar de residuo no dice nada por sí solo; 3 céntimos sí.
+    """
+    chainlink = table.column("chainlink").to_pylist()
+    checks: list[Check] = []
+    stats: dict[str, dict[str, float]] = {}
+
+    for column, label in (("binance_mid", "binance"), ("coinbase_mid", "coinbase")):
+        if column not in table.schema.names:
+            continue
+        spot = table.column(column).to_pylist()
+        diffs = [
+            c - s for c, s in zip(chainlink, spot, strict=True) if c is not None and s is not None
+        ]
+        if len(diffs) < 60:
+            checks.append(Check(f"Spot · {label}", Verdict.WARN, "muestras insuficientes"))
+            continue
+        described = _describe(diffs)
+        stats[label] = described
+        spread = described["max"] - described["min"]
+        checks.append(
+            Check(
+                f"Spot · {label} vs chainlink",
+                Verdict.PASS,
+                f"media ${described['mean']:+.2f} · desviación ${described['std']:.2f} · "
+                f"rango ${spread:.2f} ({described['n']:.0f} muestras)",
+            )
+        )
+
+    # Edad de cada feed: el `ticker` de Coinbase emite con cada OPERACIÓN, no con cada
+    # cambio del libro. Si en momentos tranquilos se queda quieto, aparece aquí.
+    for column, label in (("age_binance_direct", "binance"), ("age_coinbase", "coinbase")):
+        if column not in table.schema.names:
+            continue
+        ages = [a for a in table.column(column).to_pylist() if a is not None]
+        if not ages:
+            continue
+        ordered = sorted(ages)
+        p95 = ordered[int(len(ordered) * 0.95)]
+        checks.append(
+            Check(
+                f"Frescura · {label}",
+                _verdict(p95, 1.0, 3.0, higher_is_better=False),
+                f"p50 {ordered[len(ordered) // 2]:.2f} s · p95 {p95:.2f} s · "
+                f"máx {ordered[-1]:.1f} s",
+            )
+        )
+
+    if len(stats) == 2:
+        reference = [c for c in chainlink if c is not None]
+        checks.append(_spot_verdict(stats, sum(reference) / len(reference)))
+    return checks
+
+
+def _spot_verdict(stats: dict[str, dict[str, float]], spot: float) -> Check:
+    """El veredicto en céntimos de fair: qué fuente deja menos residuo sin corregir.
+
+    La conversión sale de `model/binary.py::delta_per_dollar`, **no de una fórmula copiada
+    aquí**. §10 registra que este proyecto arrastró una varianza mal escrita durante toda
+    una versión, con hasta 3,9¢ de error; duplicar la función en una herramienta de
+    diagnóstico es la forma más fácil de que esa clase de fallo vuelva por la puerta de
+    atrás, y encima en el sitio donde menos se mira.
+    """
+    sigma_s = deannualize(REFERENCE_SIGMA_ANNUAL)
+    variance = terminal_variance(sigma_s, REFERENCE_TAU_S, REFERENCE_WINDOW_S)
+    per_dollar = delta_per_dollar(spot, spot, variance)
+
+    cents = {name: d["std"] * per_dollar * 100.0 for name, d in stats.items()}
+    best = min(cents, key=lambda k: cents[k])
+    detail = " · ".join(f"{name} {value:.2f}¢" for name, value in sorted(cents.items()))
+    return Check(
+        "Residuo del basis en céntimos",
+        Verdict.PASS,
+        f"{detail} → mejor: {best} (a τ={REFERENCE_TAU_S:.0f} s, σ={REFERENCE_SIGMA_ANNUAL:.0%})",
+    )
+
+
+REFERENCE_SIGMA_ANNUAL = 0.60
+REFERENCE_TAU_S = 60.0
+REFERENCE_WINDOW_S = 60.0
+"""Mismo punto de referencia que §2.1.c usa para el basis: comparable con aquella tabla."""
 
 
 def check_epochs(data_dir: Path) -> list[Check]:
