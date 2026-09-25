@@ -26,6 +26,7 @@ APP_DIR="/opt/polybtc"
 DATA_DIR="/var/lib/polybtc"
 ENV_FILE="/etc/polybtc/polybtc.env"
 UV_BIN="/usr/local/bin/uv"
+UV_PYTHON_DIR="/usr/local/share/uv/python"
 
 log() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
@@ -40,7 +41,7 @@ log "Paquetes base"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
-  ca-certificates curl git ufw chrony unattended-upgrades rsync
+  ca-certificates curl git ufw chrony unattended-upgrades rsync sqlite3
 
 # El reloj no es un detalle: la edad de un feed se mide con el máximo entre el reloj
 # monótono y el de pared (§5.2). Un reloj a la deriva no da error, da halts falsos — o
@@ -152,8 +153,37 @@ cd "${APP_DIR}"
 # Python más nuevo del que puede haber ruedas de `pyarrow`, y sin ruedas uv intentaría
 # compilarlo desde fuente en una máquina de 2 vCPU. Eso no falla rápido: falla en veinte
 # minutos y con un error de compilador.
-sudo -u "${APP_USER}" env HOME="/home/${APP_USER}" "${UV_BIN}" python install
-sudo -u "${APP_USER}" env HOME="/home/${APP_USER}" "${UV_BIN}" sync --frozen --no-dev
+#
+# **Y se instala FUERA de /home**, que es lo que costó el primer arranque de los servicios:
+# por defecto uv deja el intérprete en `~/.local/share/uv/python/…` y el venv le pone un
+# symlink. Las unidades llevan `ProtectHome=yes`, así que systemd no ve ese destino y muere
+# con `203/EXEC: Unable to locate executable`. Mover el binario de uv a /usr/local/bin no
+# basta: lo que hay que mover es el Python al que apunta el venv.
+install -d -o "${APP_USER}" -g "${APP_USER}" -m 0755 "${UV_PYTHON_DIR}"
+export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_DIR}"
+sudo -u "${APP_USER}" env HOME="/home/${APP_USER}" UV_PYTHON_INSTALL_DIR="${UV_PYTHON_DIR}" \
+  "${UV_BIN}" python install
+
+# Un venv creado antes de esa corrección apunta a /home y systemd no podría usarlo. No se
+# detecta por «el archivo no existe» —desde aquí sí existe— sino por dónde apunta.
+venv_python="$(readlink -f "${APP_DIR}/.venv/bin/python" 2>/dev/null || true)"
+case "${venv_python}" in
+  /home/*)
+    echo "    el venv apuntaba a ${venv_python}: se rehace fuera de /home"
+    rm -rf "${APP_DIR}/.venv"
+    ;;
+esac
+
+sudo -u "${APP_USER}" env HOME="/home/${APP_USER}" UV_PYTHON_INSTALL_DIR="${UV_PYTHON_DIR}" \
+  "${UV_BIN}" sync --frozen --no-dev
+
+# Comprobación explícita de lo que systemd va a necesitar, para que un fallo salga aquí y
+# no como un bucle de reinicios en el journal.
+venv_python="$(readlink -f "${APP_DIR}/.venv/bin/python")"
+case "${venv_python}" in
+  /home/*) echo "ERROR: el intérprete sigue bajo /home (${venv_python})" >&2; exit 1 ;;
+  *) echo "    intérprete en ${venv_python}" ;;
+esac
 sudo -u "${APP_USER}" "${APP_DIR}/.venv/bin/python" -c \
   "import polybtc, sys; print(f'    polybtc listo sobre Python {sys.version.split()[0]}')"
 
