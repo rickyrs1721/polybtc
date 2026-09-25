@@ -30,6 +30,7 @@ from polybtc.feeds.state import (
     FEED_BINANCE_DIRECT,
     FEED_BINANCE_RELAY,
     FEED_CHAINLINK,
+    FEED_COINBASE,
     FEED_TWAP30,
     FEED_TWAP60,
     FeedState,
@@ -569,6 +570,83 @@ def test_el_estado_vivo_llega_a_state_db_cada_tick(settings: Settings) -> None:
     assert status["ticks"] == 1
     assert status["chainlink"] == 78000.0
     assert status["windows_json"] == '["w60","w900"]'
+
+    recorder._sink.close()
+    recorder._store.close()
+
+
+# ---------------------------------------------------------------------------
+# Fuente de spot: se graban las dos, el modelo usa una
+# ---------------------------------------------------------------------------
+
+
+def feed_both(state: FeedState, chainlink: float, binance: float, coinbase_mid: float) -> None:
+    feed(state, chainlink, binance)
+    state.set_price(FEED_COINBASE, Decimal(str(coinbase_mid)))
+
+
+def test_los_dos_spots_se_graban_siempre(settings: Settings) -> None:
+    """Cuál sirve mejor lo deciden los datos, igual que las dos hipótesis de ventana (§8)."""
+    recorder = Recorder(settings)
+    feed_both(recorder._state, 78000.0, 78014.0, 78003.0)
+    row = recorder.tick(T0)
+
+    assert row.binance_mid == 78014.0
+    assert row.coinbase_mid == 78003.0
+    assert row.age_coinbase is not None
+
+    recorder._sink.close()
+    recorder._store.close()
+
+
+def test_el_modelo_usa_la_fuente_configurada(settings: Settings) -> None:
+    """`spot_source` decide de cuál se fía el basis. Mezclarlas lo envenenaría.
+
+    Con Coinbase el par es BTC-USD y el basis mide solo prima de plaza; con Binance es
+    BTC-USDT y lleva además el desanclaje. Son dos magnitudes distintas (§2.1.b).
+    """
+    con_coinbase = settings.model_copy(update={"spot_source": "coinbase"})
+    recorder = Recorder(con_coinbase)
+    assert recorder._spot_feed == FEED_COINBASE
+
+    for i in range(5):
+        feed_both(recorder._state, 78000.0, 90000.0, 78100.0)
+        row = recorder.tick(T0 + timedelta(seconds=i))
+
+    # El basis sale de chainlink/coinbase (~-1,3 $), no de chainlink/binance (~-13.000 $).
+    assert row.basis_usd is not None
+    assert abs(row.basis_usd) < 500.0, "usó Binance, que aquí está deliberadamente lejos"
+
+    recorder._sink.close()
+    recorder._store.close()
+
+
+def test_el_spot_que_no_alimenta_al_modelo_no_ciega(settings: Settings) -> None:
+    """Sin Coinbase pero con Binance fresco, se puede cotizar: el otro es comparación.
+
+    Marcar la ausencia del testigo como halt confundiría «me falta un cross-check» con «me
+    falta el dato», y en 14 días eso descartaría franjas enteras sin motivo.
+    """
+    recorder = Recorder(settings)
+    feed(recorder._state, 78000.0, 78014.0)  # sin Coinbase a propósito
+    row = recorder.tick(T0)
+
+    assert "stale:coinbase" not in row.halt_reasons
+    assert "stale:binance" not in row.halt_reasons
+
+    recorder._sink.close()
+    recorder._store.close()
+
+
+def test_falta_el_spot_elegido_y_eso_si_ciega(settings: Settings) -> None:
+    """Con `spot_source=coinbase` y sin feed de Coinbase, el halt tiene que saltar."""
+    con_coinbase = settings.model_copy(update={"spot_source": "coinbase"})
+    recorder = Recorder(con_coinbase)
+    feed(recorder._state, 78000.0, 78014.0)  # llega Binance, no Coinbase
+    row = recorder.tick(T0)
+
+    assert "stale:coinbase" in row.halt_reasons
+    assert row.spot_oracle is None
 
     recorder._sink.close()
     recorder._store.close()

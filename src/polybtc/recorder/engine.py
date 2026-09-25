@@ -25,12 +25,13 @@ import sys
 from datetime import UTC, datetime
 
 from polybtc.config import Settings
-from polybtc.feeds import book, rtds, spot
+from polybtc.feeds import book, coinbase, rtds, spot
 from polybtc.feeds.discovery import Epoch
 from polybtc.feeds.state import (
     FEED_BINANCE_DIRECT,
     FEED_BINANCE_RELAY,
     FEED_CHAINLINK,
+    FEED_COINBASE,
     FEED_TWAP30,
     FEED_TWAP60,
     FeedState,
@@ -46,17 +47,16 @@ from polybtc.recorder.schema import ModelPoint, Sample, f, window_suffix
 from polybtc.recorder.sink import ParquetSink, recover_orphans
 from polybtc.recorder.status import StatusStore
 
-REQUIRED_FEEDS: tuple[tuple[str, str], ...] = (
+ORACLE_FEEDS: tuple[tuple[str, str], ...] = (
     (FEED_CHAINLINK, "chainlink"),
     (FEED_TWAP30, "twap30"),
     (FEED_TWAP60, "twap60"),
-    (FEED_BINANCE_DIRECT, "binance"),
 )
-"""Pares `(clave de staleness, etiqueta)` de los feeds sin los cuales no habría fair.
+"""Feeds del oráculo, exigidos siempre: son el ancla de liquidación (§2.1).
 
-`binance_relay` queda fuera a propósito: es el cross-check de §2.1.b, no un insumo — su
-ausencia no ciega el modelo. La etiqueta existe porque la clave de un libro lleva el token
-id dentro y cambia con cada época (ver `halts.evaluate`).
+Al spot se le exige solo el que alimenta al modelo, que depende de `spot_source`. El otro y
+`binance_relay` se graban pero NO ciegan: son comparación y cross-check (§2.1.b), y marcar
+su ausencia como halt confundiría «me falta un testigo» con «me falta el dato».
 """
 
 
@@ -76,6 +76,12 @@ class Recorder:
             floor_s=deannualize(settings.vol_floor_annual),
             ceiling_s=deannualize(settings.vol_ceiling_annual),
         )
+        self._spot_feed = (
+            FEED_COINBASE if settings.spot_source == "coinbase" else FEED_BINANCE_DIRECT
+        )
+        """Feed del que se fía el modelo. El OTRO se graba igual: la comparación entre los
+        dos spots es una pregunta que contestan los datos de la Fase 0, no la configuración."""
+
         self._windows = tuple(settings.twap_window_hypotheses_s)
         self._store = StatusStore(settings.state_db_path)
         self._sink = ParquetSink(settings.data_dir, self._windows)
@@ -107,6 +113,7 @@ class Recorder:
         tasks = [
             asyncio.create_task(rtds.run(self._state, self._settings), name="rtds"),
             asyncio.create_task(spot.run(self._state, self._settings), name="spot"),
+            asyncio.create_task(coinbase.run(self._state, self._settings), name="coinbase"),
             asyncio.create_task(self._tracker.run_discovery(), name="discovery"),
             asyncio.create_task(self._tracker.run_resolutions(), name="resolutions"),
         ]
@@ -167,11 +174,13 @@ class Recorder:
         twap60 = f(state.prices.get(FEED_TWAP60))
         binance = f(state.prices.get(FEED_BINANCE_DIRECT))
         relay = f(state.prices.get(FEED_BINANCE_RELAY))
+        coinbase_mid = f(state.prices.get(FEED_COINBASE))
 
-        self._update_estimators(now, chainlink, binance)
+        spot_mid = coinbase_mid if self._spot_feed == FEED_COINBASE else binance
+        self._update_estimators(now, chainlink, spot_mid)
         self._tracker.observe(now, chainlink, twap30, twap60)
 
-        spot_oracle = self._spot_in_oracle_units(binance)
+        spot_oracle = self._spot_in_oracle_units(spot_mid)
         epoch = self._tracker.current
         strike = self._tracker.strike
         tau_s = None if epoch is None else epoch.tau_s(now)
@@ -197,8 +206,9 @@ class Recorder:
             twap60=twap60,
             binance_mid=binance,
             binance_relay=relay,
+            coinbase_mid=coinbase_mid,
             basis_log=self._basis.log_basis if self._basis.samples else None,
-            basis_usd=self._basis_usd(binance),
+            basis_usd=self._basis_usd(spot_mid),
             basis_ready=self._basis.ready,
             basis_samples=self._basis.samples,
             basis_clamped=self._basis.last_observation_clamped,
@@ -227,6 +237,7 @@ class Recorder:
             age_twap60=state.age_s(FEED_TWAP60),
             age_binance_direct=state.age_s(FEED_BINANCE_DIRECT),
             age_binance_relay=state.age_s(FEED_BINANCE_RELAY),
+            age_coinbase=state.age_s(FEED_COINBASE),
             age_book_up=None if epoch is None else state.age_s(book_feed(epoch.up_token)),
             age_book_down=None if epoch is None else state.age_s(book_feed(epoch.down_token)),
             reconnects=sum(state.reconnects.values()),
@@ -235,46 +246,50 @@ class Recorder:
     # -- modelo ------------------------------------------------------------------------
 
     def _update_estimators(
-        self, now: datetime, chainlink: float | None, binance: float | None
+        self, now: datetime, chainlink: float | None, spot_mid: float | None
     ) -> None:
         """Alimenta basis y σ, cada uno solo con datos que tienen derecho a moverlos.
 
-        El basis exige que NINGUNO de los dos lados esté stale: mezclar un Chainlink de
-        hace 5 s con un Binance de hace 20 ms no mide el basis, mide el rezago del TWAP.
+        `spot_mid` es el de la fuente elegida en `spot_source`, no «el de Binance»: con
+        Coinbase el par es BTC-USD y el basis mide otra cosa —solo prima de plaza, sin
+        desanclaje de USDT—, así que mezclar fuentes dentro del estimador lo envenenaría.
 
-        σ exige que el mid de Binance esté fresco por un motivo distinto: `EwmaVol` se
-        re-ancla ante un hueco, pero si le pasáramos el último mid conocido durante una
-        desconexión vería una serie plana y sesgaría σ a la baja justo después de un corte,
-        que es cuando menos hay que fiarse de ella.
+        El basis exige que NINGUNO de los dos lados esté stale: mezclar un Chainlink de
+        hace 5 s con un spot de hace 20 ms no mide el basis, mide el rezago del TWAP.
+
+        σ exige que el mid esté fresco por un motivo distinto: `EwmaVol` se re-ancla ante un
+        hueco, pero si le pasáramos el último mid conocido durante una desconexión vería una
+        serie plana y sesgaría σ a la baja justo después de un corte, que es cuando menos
+        hay que fiarse de ella.
         """
         ts = now.timestamp()
         state = self._state
         if (
             chainlink is not None
-            and binance is not None
+            and spot_mid is not None
             and not state.is_stale(FEED_CHAINLINK)
-            and not state.is_stale(FEED_BINANCE_DIRECT)
+            and not state.is_stale(self._spot_feed)
         ):
-            self._basis.update(ts, chainlink, binance)
-        if binance is not None and not state.is_stale(FEED_BINANCE_DIRECT):
-            self._vol.update(ts, binance)
+            self._basis.update(ts, chainlink, spot_mid)
+        if spot_mid is not None and not state.is_stale(self._spot_feed):
+            self._vol.update(ts, spot_mid)
 
-    def _spot_in_oracle_units(self, binance: float | None) -> float | None:
-        """Spot de Binance corregido a unidades del oráculo, o `None` si no se puede.
+    def _spot_in_oracle_units(self, spot_mid: float | None) -> float | None:
+        """Spot corregido a unidades del oráculo, o `None` si no se puede.
 
         `None` cuando el basis no ha convergido no es un hueco molesto: es la regla de §5.2
         —basis sin converger, no cotizar— expresada como dato. Un fair calculado sobre un
         basis a medias sería peor que ninguno, porque el sesgo entra entero en `ln(S/K)`.
         """
-        if binance is None or not self._basis.ready:
+        if spot_mid is None or not self._basis.ready:
             return None
-        return self._basis.to_oracle(binance)
+        return self._basis.to_oracle(spot_mid)
 
-    def _basis_usd(self, binance: float | None) -> float | None:
+    def _basis_usd(self, spot_mid: float | None) -> float | None:
         """El basis en dólares. En logs es ilegible y nadie nota que se está moviendo."""
-        if binance is None or self._basis.samples == 0:
+        if spot_mid is None or self._basis.samples == 0:
             return None
-        return binance * (self._basis.basis_ratio - 1.0)
+        return spot_mid * (self._basis.basis_ratio - 1.0)
 
     def _evaluate_models(
         self,
@@ -327,10 +342,12 @@ class Recorder:
 
     def _required_feeds(self, epoch: Epoch | None) -> tuple[tuple[str, str], ...]:
         """Los feeds exigidos incluyen el libro solo cuando hay un mercado que seguir."""
+        spot = (self._spot_feed, self._settings.spot_source)
         if epoch is None:
-            return REQUIRED_FEEDS
+            return (*ORACLE_FEEDS, spot)
         return (
-            *REQUIRED_FEEDS,
+            *ORACLE_FEEDS,
+            spot,
             (book_feed(epoch.up_token), "book_up"),
             (book_feed(epoch.down_token), "book_down"),
         )
@@ -412,6 +429,7 @@ class Recorder:
                 "age_twap60": sample.age_twap60,
                 "age_binance_direct": sample.age_binance_direct,
                 "age_binance_relay": sample.age_binance_relay,
+                "age_coinbase": sample.age_coinbase,
                 "age_book_up": sample.age_book_up,
                 "age_book_down": sample.age_book_down,
                 "staleness_s": self._settings.staleness_s,
@@ -420,12 +438,14 @@ class Recorder:
                 "twap60": sample.twap60,
                 "binance_mid": sample.binance_mid,
                 "binance_relay": sample.binance_relay,
+                "coinbase_mid": sample.coinbase_mid,
                 "basis_usd": sample.basis_usd,
                 "basis_log": sample.basis_log,
                 "basis_ready": sample.basis_ready,
                 "basis_samples": sample.basis_samples,
                 "basis_clamped": sample.basis_clamped,
                 "spot_oracle": sample.spot_oracle,
+                "spot_source": self._settings.spot_source,
                 "sigma_s": sample.sigma_s,
                 "sigma_annual": sample.sigma_annual,
                 "sigma_ready": sample.sigma_ready,

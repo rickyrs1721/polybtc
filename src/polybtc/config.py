@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -45,6 +46,12 @@ class Settings(BaseSettings):
     # (consultado 2026-09-02). Raw stream: {base}/{symbol}@bookTicker
     binance_ws_base_url: str = "wss://stream.binance.com:9443/ws"
 
+    # docs.cdp.coinbase.com/exchange/websocket-feed/channels (consultado 2026-09-24)
+    coinbase_ws_url: str = "wss://ws-feed.exchange.coinbase.com"
+    coinbase_product_id: str = "BTC-USD"
+    """**BTC-USD, no BTC-USDT.** Misma denominación que Chainlink, así que la mitad del
+    basis de §2.1.b —el desanclaje de USDT— desaparece de raíz."""
+
     # -- Símbolos -------------------------------------------------------------------
     chainlink_symbol: str = "btc/usd"
     """Minúsculas y con barra, tal como los acepta el filtro de RTDS."""
@@ -54,6 +61,18 @@ class Settings(BaseSettings):
 
     twap_windows_s: tuple[int, ...] = (30, 60)
     """Únicos valores admitidos por RTDS. Cuál se usa para cotizar es decisión de §8."""
+
+    spot_source: Literal["binance", "coinbase"] = "binance"
+    """Qué feed alimenta σ, el basis y el `fair`. **Los dos se graban siempre.**
+
+    Esto es un conmutador, no una preferencia: ambos spots van al Parquet en cada fila, y
+    cuál sirve mejor lo deciden los datos de la Fase 0, igual que las dos hipótesis de
+    ventana TWAP de §8. Lo que cambia esta opción es solo de cuál se fía el modelo.
+
+    Sigue en `binance` porque es la fuente con la que se midió la línea base del basis de
+    §2.1.c. Moverlo a `coinbase` obliga a volver a medir esa línea base: es otra plaza y
+    otra denominación, así que el basis será otro número.
+    """
 
     # -- Book -----------------------------------------------------------------------
     market_slug_prefix: str = "btc-updown-15m"

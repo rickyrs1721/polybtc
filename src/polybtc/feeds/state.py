@@ -20,6 +20,14 @@ FEED_TWAP30 = "twap30"
 FEED_TWAP60 = "twap60"
 FEED_BINANCE_RELAY = "binance_relay"
 FEED_BINANCE_DIRECT = "binance_direct"
+FEED_COINBASE = "coinbase"
+"""Spot de Coinbase (BTC-USD). Alternativa a Binance por latencia y por denominación.
+
+Se graba SIEMPRE, aunque el modelo use otra fuente: cuál de las dos sirve mejor es una
+pregunta que deben contestar los datos de la Fase 0, no un RTT medido una tarde. Es el
+mismo patrón que las dos hipótesis de ventana TWAP de §8.
+"""
+
 FEED_BOOK_PREFIX = "book:"
 
 
@@ -43,6 +51,7 @@ ALL_FEEDS: tuple[str, ...] = (
     FEED_TWAP60,
     FEED_BINANCE_RELAY,
     FEED_BINANCE_DIRECT,
+    FEED_COINBASE,
     FEED_BOOK,
 )
 

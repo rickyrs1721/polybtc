@@ -20,12 +20,13 @@ import pytest
 from websockets.asyncio.server import ServerConnection, serve
 
 from polybtc.config import Settings
-from polybtc.feeds import book, rtds, spot
+from polybtc.feeds import book, coinbase, rtds, spot
 from polybtc.feeds.parsing import as_decimal, loads_decimal
 from polybtc.feeds.state import (
     FEED_BINANCE_DIRECT,
     FEED_BINANCE_RELAY,
     FEED_CHAINLINK,
+    FEED_COINBASE,
     FEED_TWAP30,
     FEED_TWAP60,
     FeedState,
@@ -713,3 +714,86 @@ def test_un_evento_sin_asset_id_se_descarta(state: FeedState) -> None:
     book.handle_message(raw, state)
 
     assert state.books == {}
+
+
+# ---------------------------------------------------------------------------
+# Coinbase: el spot alternativo, BTC-USD y a 8 ms de Europa
+# ---------------------------------------------------------------------------
+
+
+def test_coinbase_expone_el_mid_no_el_ultimo_trade(state: FeedState, settings: Settings) -> None:
+    """§3.4 otra vez: el `ticker` trae `price` (último trade) y se ignora a propósito.
+
+    El último trade arrastra bid-ask bounce, que el estimador de σ leería como volatilidad
+    real. El mid de `best_bid`/`best_ask` no tiene ese sesgo.
+    """
+    raw = json.dumps(
+        {
+            "type": "ticker",
+            "product_id": "BTC-USD",
+            "price": "77000.00",
+            "best_bid": "76999.50",
+            "best_ask": "77000.50",
+        }
+    )
+    coinbase.handle_message(raw, state, settings)
+
+    assert state.prices[FEED_COINBASE] == Decimal("77000.00")
+    quote = coinbase.parse_ticker(raw, settings)
+    assert quote is not None
+    assert quote.mid == Decimal("77000.00")
+    assert quote.mid != Decimal("77000.00") + Decimal("0.01"), "no es el último trade"
+
+
+def test_coinbase_filtra_por_producto(state: FeedState, settings: Settings) -> None:
+    """Una suscripción puede traer varios productos: mezclarlos no daría error, daría ruido."""
+    otro = json.dumps(
+        {"type": "ticker", "product_id": "ETH-USD", "best_bid": "3000", "best_ask": "3001"}
+    )
+    coinbase.handle_message(otro, state, settings)
+    assert FEED_COINBASE not in state.prices
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"type": "heartbeat", "product_id": "BTC-USD"}',
+        '{"type": "ticker", "product_id": "BTC-USD", "best_bid": "77001", "best_ask": "77000"}',
+        '{"type": "ticker", "product_id": "BTC-USD", "best_bid": "0", "best_ask": "1"}',
+        '{"type": "subscriptions", "channels": []}',
+        "no es json",
+    ],
+)
+def test_coinbase_descarta_lo_que_no_es_un_ticker_coherente(raw: str, settings: Settings) -> None:
+    """Un cruce (`bid >= ask`) se descarta en vez de propagarse: envenenaría σ y el basis."""
+    assert coinbase.parse_ticker(raw, settings) is None
+
+
+def test_coinbase_se_suscribe_a_ticker_y_heartbeat(settings: Settings) -> None:
+    """El heartbeat no es decorativo: da tráfico de 1/s para que `recv_timeout_s` no
+    confunda un minuto tranquilo con una conexión muerta."""
+    message = json.loads(coinbase.build_subscribe_message(settings))
+
+    assert message["type"] == "subscribe"
+    assert message["product_ids"] == ["BTC-USD"]
+    assert set(message["channels"]) == {"ticker", "heartbeat"}
+
+
+def test_coinbase_conserva_los_digitos_exactos(settings: Settings) -> None:
+    """§4: el precio no pasa por `float` en el camino, ni siquiera viniendo como cadena."""
+    raw = json.dumps(
+        {
+            "type": "ticker",
+            "product_id": "BTC-USD",
+            "best_bid": "76999.100000000000001",
+            "best_ask": "77000.100000000000001",
+        }
+    )
+    quote = coinbase.parse_ticker(raw, settings)
+    assert quote is not None
+
+    assert quote.bid == Decimal("76999.100000000000001")
+    # Por `float` ese literal se redondea y pierde el último dígito. El Decimal exacto no
+    # coincide con él: es la prueba de que la frontera de §4 no se cruza en este camino.
+    assert quote.bid != Decimal(str(float("76999.100000000000001")))
+    assert quote.mid == Decimal("76999.600000000000001")

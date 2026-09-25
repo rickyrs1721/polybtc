@@ -97,12 +97,34 @@ REFERENCE_WINDOW_S = 60.0
 RTT_SAMPLES = 12
 SAMPLE_INTERVAL_S = 1.0
 
-ENDPOINTS: tuple[tuple[str, str], ...] = (
-    ("RTDS (Polymarket)", "wss://ws-live-data.polymarket.com"),
-    ("CLOB market (Polymarket)", "wss://ws-subscriptions-clob.polymarket.com/ws/market"),
-    ("Gamma (Polymarket)", "https://gamma-api.polymarket.com"),
-    ("Binance spot", "wss://stream.binance.com:9443/ws"),
-)
+SPOT_LABEL = "spot del modelo"
+"""Etiqueta del endpoint que alimenta al modelo. El diferencial se mide contra ESTE.
+
+Medirlo siempre contra Binance dejaría el preflight fallando para siempre por un feed que
+quizá ni se use: desde Europa, Binance está a ~270 ms (Tokio) y Coinbase a ~8 ms, y cuál de
+los dos manda es `Settings.spot_source`.
+"""
+
+
+def endpoints(settings: Settings) -> tuple[tuple[str, str], ...]:
+    """Endpoints a medir. El del spot depende de la fuente configurada."""
+    spot_url = (
+        settings.coinbase_ws_url
+        if settings.spot_source == "coinbase"
+        else f"{settings.binance_ws_base_url}/{settings.binance_symbol}@bookTicker"
+    )
+    other = (
+        ("Binance (no usado)", f"{settings.binance_ws_base_url}/x")
+        if settings.spot_source == "coinbase"
+        else ("Coinbase (no usado)", settings.coinbase_ws_url)
+    )
+    return (
+        ("RTDS (Polymarket)", "wss://ws-live-data.polymarket.com"),
+        ("CLOB market (Polymarket)", "wss://ws-subscriptions-clob.polymarket.com/ws/market"),
+        ("Gamma (Polymarket)", "https://gamma-api.polymarket.com"),
+        (f"{SPOT_LABEL} · {settings.spot_source}", spot_url),
+        other,
+    )
 
 
 class Verdict(StrEnum):
@@ -267,12 +289,12 @@ def tcp_rtt_ms(host: str, port: int, samples: int = RTT_SAMPLES) -> float | None
     return statistics.median(timings) if timings else None
 
 
-def measure_endpoints() -> tuple[list[Check], dict[str, float]]:
+def measure_endpoints(settings: Settings) -> tuple[list[Check], dict[str, float]]:
     """RTT a cada endpoint. Devuelve también las medianas para el cálculo del diferencial."""
     checks: list[Check] = []
     rtts: dict[str, float] = {}
 
-    for label, url in ENDPOINTS:
+    for label, url in endpoints(settings):
         parsed = urlparse(url)
         host = parsed.hostname or ""
         port = parsed.port or (443 if parsed.scheme in ("https", "wss") else 80)
@@ -282,6 +304,10 @@ def measure_endpoints() -> tuple[list[Check], dict[str, float]]:
             checks.append(Check(f"Alcance · {label}", Verdict.FAIL, f"{host}:{port} inalcanzable"))
             continue
         rtts[label] = rtt
+        if "no usado" in label:
+            # Se mide para poder comparar, pero no puede tumbar el veredicto.
+            checks.append(Check(f"Alcance · {label}", Verdict.PASS, f"{rtt:.0f} ms"))
+            continue
         verdict = (
             Verdict.FAIL
             if rtt > RTT_FAIL_MS
@@ -310,7 +336,7 @@ def phantom_edge_cents(lag_s: float, spot: float = 78_500.0) -> float:
     return delta_per_dollar(spot, spot, variance) * drift * 100.0
 
 
-def check_differential(rtts: dict[str, float]) -> Check:
+def check_differential(rtts: dict[str, float], settings: Settings) -> Check:
     """La DIFERENCIA de latencia, no la latencia. Es un indicio fuerte, no una medición fina.
 
     **El sesgo, que hay que conocer antes de creerse el número**: los endpoints de
@@ -324,12 +350,12 @@ def check_differential(rtts: dict[str, float]) -> Check:
     recorre el camino entero, borde incluido.
     """
     polymarket = rtts.get("CLOB market (Polymarket)")
-    binance = rtts.get("Binance spot")
-    if polymarket is None or binance is None:
+    spot = rtts.get(f"{SPOT_LABEL} · {settings.spot_source}")
+    if polymarket is None or spot is None:
         return Check("Edge fantasma por latencia", Verdict.WARN, "faltan medidas de RTT")
 
     # Media onda: un mensaje viaja en un sentido, no ida y vuelta.
-    lag_s = abs(polymarket - binance) / 2.0 / 1000.0
+    lag_s = abs(polymarket - spot) / 2.0 / 1000.0
     cents = phantom_edge_cents(lag_s)
     verdict = (
         Verdict.FAIL
@@ -341,7 +367,7 @@ def check_differential(rtts: dict[str, float]) -> Check:
     return Check(
         "Edge fantasma por latencia",
         verdict,
-        f"|Polymarket − Binance| = {abs(polymarket - binance):.0f} ms → "
+        f"|Polymarket − {settings.spot_source}| = {abs(polymarket - spot):.0f} ms → "
         f"{cents:.2f}¢ a τ=60 s (colchón de §3.5: {PHANTOM_FAIL_CENTS:.0f}¢). "
         "Indicio con sesgo de CDN: compara máquinas, no lo tomes como medida absoluta",
     )
@@ -472,9 +498,9 @@ async def main() -> int:
     print(f"preflight · {datetime.now(UTC).isoformat(timespec='seconds')}\n")
 
     checks = [check_geoblock(), check_ipv4(), check_clock()]
-    endpoint_checks, rtts = measure_endpoints()
+    endpoint_checks, rtts = measure_endpoints(settings)
     checks += endpoint_checks
-    checks.append(check_differential(rtts))
+    checks.append(check_differential(rtts, settings))
 
     for check in checks:
         print(check.render())

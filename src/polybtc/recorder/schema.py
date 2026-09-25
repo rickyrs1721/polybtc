@@ -70,6 +70,12 @@ class Sample:
     twap60: float | None = None
     binance_mid: float | None = None
     binance_relay: float | None = None
+    coinbase_mid: float | None = None
+    """Spot de Coinbase (BTC-USD). Se graba SIEMPRE, use el modelo esta fuente o no.
+
+    Cuál de los dos spots sirve mejor es una pregunta para los datos de la Fase 0, no para
+    un RTT medido una tarde: es el mismo patrón que las dos hipótesis de ventana de §8.
+    """
 
     basis_log: float | None = None
     basis_usd: float | None = None
@@ -121,6 +127,7 @@ class Sample:
     age_twap60: float | None = None
     age_binance_direct: float | None = None
     age_binance_relay: float | None = None
+    age_coinbase: float | None = None
     age_book_up: float | None = None
     age_book_down: float | None = None
     reconnects: int = 0
@@ -133,6 +140,7 @@ _BASE_FIELDS: tuple[tuple[str, pa.DataType], ...] = (
     ("twap60", pa.float64()),
     ("binance_mid", pa.float64()),
     ("binance_relay", pa.float64()),
+    ("coinbase_mid", pa.float64()),
     ("basis_log", pa.float64()),
     ("basis_usd", pa.float64()),
     ("basis_ready", pa.bool_()),
@@ -176,6 +184,7 @@ _TAIL_FIELDS: tuple[tuple[str, pa.DataType], ...] = (
     ("age_twap60", pa.float64()),
     ("age_binance_direct", pa.float64()),
     ("age_binance_relay", pa.float64()),
+    ("age_coinbase", pa.float64()),
     ("age_book_up", pa.float64()),
     ("age_book_down", pa.float64()),
     ("reconnects", pa.int32()),
