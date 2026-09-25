@@ -92,6 +92,9 @@ class Recorder:
         self._started_at = datetime.now(UTC)
         self._ticks = 0
         self._last_flush_at: datetime | None = None
+        self._retiring: set[asyncio.Task[None]] = set()
+        """Limpiezas de libros retirados, en vuelo. Ver `_retire_book`."""
+
         self._pending_epoch: Epoch | None = None
         self._epoch_dirty = False
 
@@ -122,7 +125,7 @@ class Recorder:
         finally:
             for task in tasks:
                 task.cancel()
-            await self._stop_book()
+            await self._close_book()
             await asyncio.gather(*tasks, return_exceptions=True)
             # El orden importa: primero el disco de datos, después el estado vivo. Si algo
             # fallara aquí, lo que tiene que estar completo es la Fase 0, no el heartbeat.
@@ -363,16 +366,20 @@ class Recorder:
         Cancelar y relanzar la tarea en vez de mutar la suscripción viva: `book.run` lee
         los tokens al conectar, y una reconexión limpia es más fácil de razonar que un
         protocolo de resuscripción que la documentación no describe.
+
+        **No se espera a que el libro anterior termine de morir**, y esa es la diferencia
+        entre grabar 14 días y grabar 14 días con agujeros. Cancelar un WebSocket dispara
+        su handshake de cierre, que tarda hasta el `close_timeout` de la librería. Medido en
+        el VPS: esperarlo aquí costaba un hueco de **11 segundos en cada cambio de época**,
+        y con 96 épocas al día son ~17 minutos de datos perdidos diarios. §6 obliga a
+        reiniciar el contador de la Fase 0 ante agujeros en los datos.
         """
         if not self._epoch_dirty:
             return
         self._epoch_dirty = False
         epoch = self._pending_epoch
 
-        await self._stop_book()
-        for token in self._book_tokens:
-            self._state.forget_book(token)
-        self._book_tokens = ()
+        self._retire_book()
 
         if epoch is None:
             return
@@ -380,13 +387,35 @@ class Recorder:
         settings = self._settings.model_copy(update={"token_ids": self._book_tokens})
         self._book_task = asyncio.create_task(book.run(self._state, settings), name="book")
 
-    async def _stop_book(self) -> None:
-        if self._book_task is None:
+    def _retire_book(self) -> None:
+        """Cancela el libro anterior sin bloquear, y olvida sus tokens cuando de verdad muera.
+
+        El olvido va en la tarea de limpieza y no aquí por una carrera pequeña pero real:
+        si se olvidara el token antes de que la tarea cancelada termine, un último mensaje
+        en vuelo volvería a crear la entrada y quedaría un libro fantasma con su edad
+        corriendo. En 14 días son ~2.700 tokens que rotan, así que la fuga importaría.
+        """
+        task, tokens = self._book_task, self._book_tokens
+        self._book_task, self._book_tokens = None, ()
+        if task is None:
             return
-        self._book_task.cancel()
+        task.cancel()
+        cleanup = asyncio.create_task(self._forget_when_dead(task, tokens))
+        # Guardar la referencia: sin ella el recolector puede llevarse una tarea viva.
+        self._retiring.add(cleanup)
+        cleanup.add_done_callback(self._retiring.discard)
+
+    async def _forget_when_dead(self, task: asyncio.Task[None], tokens: tuple[str, ...]) -> None:
         with contextlib.suppress(asyncio.CancelledError, Exception):
-            await self._book_task
-        self._book_task = None
+            await task
+        for token in tokens:
+            self._state.forget_book(token)
+
+    async def _close_book(self) -> None:
+        """Cierre ordenado del libro. Solo en el apagado: aquí sí se espera el handshake."""
+        self._retire_book()
+        if self._retiring:
+            await asyncio.gather(*tuple(self._retiring), return_exceptions=True)
 
     # -- disco -------------------------------------------------------------------------
 

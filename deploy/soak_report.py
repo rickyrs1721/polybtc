@@ -410,7 +410,10 @@ def main() -> int:
         return 1
 
     checks = (
-        check_coverage(table, args.data_dir) + check_health(table) + check_epochs(args.data_dir)
+        check_coverage(table, args.data_dir)
+        + check_health(table)
+        + check_spots(table)
+        + check_epochs(args.data_dir)
     )
     worst = max(checks, key=lambda c: c.verdict.rank).verdict
 

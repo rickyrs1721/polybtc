@@ -11,6 +11,7 @@ es justamente la razón de que lo sea.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import os
 import signal
@@ -648,5 +649,47 @@ def test_falta_el_spot_elegido_y_eso_si_ciega(settings: Settings) -> None:
     assert "stale:coinbase" in row.halt_reasons
     assert row.spot_oracle is None
 
+    recorder._sink.close()
+    recorder._store.close()
+
+
+async def test_el_relevo_de_epoca_no_bloquea_el_bucle(settings: Settings) -> None:
+    """Cancelar el libro anterior NO puede esperar a su handshake de cierre.
+
+    Medido en el VPS: esperarlo costaba un hueco de 11 s en cada cambio de época. Con 96
+    épocas al día son ~17 minutos de datos perdidos diarios, y §6 obliga a reiniciar el
+    contador de la Fase 0 ante agujeros. El libro viejo se cancela y se deja morir aparte.
+    """
+    recorder = Recorder(settings)
+    muriendo = asyncio.Event()
+
+    async def libro_que_tarda_en_morir() -> None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            muriendo.set()
+            await asyncio.sleep(5)  # el handshake de cierre del WebSocket
+            raise
+
+    recorder._book_task = asyncio.create_task(libro_que_tarda_en_morir())
+    recorder._book_tokens = ("tok-viejo",)
+    recorder._state.set_book("tok-viejo", Quote(Decimal("0.4"), Decimal("0.6")))
+    await asyncio.sleep(0)
+
+    recorder._on_epoch_change(epoch(T0))
+    inicio = asyncio.get_running_loop().time()
+    await recorder._apply_epoch_change()
+    tardanza = asyncio.get_running_loop().time() - inicio
+
+    assert tardanza < 0.5, f"el relevo bloqueó {tardanza:.1f} s el bucle de 1 Hz"
+
+    # La cancelación se propaga en el siguiente ciclo del bucle, no dentro del relevo: es
+    # justo lo que hace que el relevo sea instantáneo.
+    await asyncio.wait_for(muriendo.wait(), timeout=1.0)
+    # El token viejo se olvida cuando la tarea muere de verdad, no antes: si se olvidara ya,
+    # un último mensaje en vuelo recrearía la entrada y quedaría un libro fantasma.
+    assert recorder._state.book("tok-viejo") is not None
+
+    await recorder._close_book()
     recorder._sink.close()
     recorder._store.close()
