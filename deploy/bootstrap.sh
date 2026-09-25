@@ -30,6 +30,28 @@ UV_PYTHON_DIR="/usr/local/share/uv/python"
 
 log() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
+# **Este script no puede ejecutarse desde el directorio que él mismo actualiza.**
+#
+# Más abajo hace `git reset --hard` sobre ${APP_DIR}, y bash lee los scripts por OFFSET DE
+# BYTES mientras los ejecuta: si el archivo cambia bajo sus pies, bash continúa leyendo en
+# la posición antigua del archivo NUEVO. El resultado es que se salta secciones enteras o
+# ejecuta fragmentos partidos, y **no da ningún error** — el script parece completar.
+#
+# Pasó de verdad: una corrida desde /opt/polybtc imprimió todas sus cabeceras y aun así no
+# llegó a ejecutar la instalación del intérprete, que quedó donde no debía.
+#
+# En vez de documentarlo y confiar en que nadie se equivoque, el script se copia fuera y se
+# vuelve a lanzar desde la copia.
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+case "${SELF}" in
+  "${APP_DIR}"/*)
+    TMP_SELF="$(mktemp /tmp/polybtc-bootstrap.XXXXXX)"
+    cp "${SELF}" "${TMP_SELF}"
+    echo "    (relanzado desde ${TMP_SELF}: este script actualiza su propio directorio)"
+    exec bash "${TMP_SELF}" "$@"
+    ;;
+esac
+
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Ejecútalo como root: sudo bash deploy/bootstrap.sh" >&2
   exit 1
