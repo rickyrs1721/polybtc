@@ -888,3 +888,30 @@ fallo silencioso o engañoso:
 | `urllib` sin `User-Agent` recibe **403** del borde de Cloudflare | Parecía un geobloqueo. Un preflight que confunde «me han bloqueado» con «no me he presentado» descarta una máquina buena |
 | El RTT a los endpoints de Polymarket mide **el nodo de borde de la CDN**, no el mercado | Desde Perú: 59 ms a Polymarket y 246 ms a Binance, con Londres a ~180 ms. Sirve para comparar dos máquinas candidatas, no como medida absoluta |
 | El dashboard necesita `ReadWritePaths` pese a abrir `state.db` en `mode=ro` | Una base en WAL necesita su `-shm` **para leerla**. Con el escritor muerto y el sistema de ficheros en solo lectura, la lectura falla y el panel diría «sin grabador» justo cuando el grabador se reinicia |
+
+### v2.7 — al desplegar y correr el soak (septiembre 2026)
+
+El despliegue destapó siete fallos que solo aparecen ejecutando, y el soak de 72 h destapó
+dos hallazgos de modelo. Los del despliegue están en `deploy/` con su porqué escrito en el
+propio script; los de modelo se anotan aquí porque condicionan el análisis del Sprint 5.
+
+| § | Hallazgo | Consecuencia |
+| --- | --- | --- |
+| 2.1.c | **Coinbase NO gana a Binance como spot.** Medido sobre 259.167 muestras y 72 h | Coinbase tiene mejor NIVEL (media −$3,26 contra −$18,46) pero PEOR dispersión ($7,79 contra $6,57). §2.1.c ya dice que el nivel lo sigue el estimador y la dispersión no: gana Binance, 6,51¢ contra 7,72¢ de residuo |
+| 3.4 | **σ está subestimada.** p50 = 12,8% anual, y un 34,7% del tiempo por debajo del piso de 10% | El modelo sale más extremo que el mercado: 32,9% de sus fair en los extremos contra 23,4% del mercado. De ahí que \|fair − mid\| supere 3¢ el 61% del tiempo, que **no es edge, es calibración** |
+| 8 | Evidencia preliminar sobre la ventana TWAP | `w=60` encaja mucho mejor que `w=900`: \|fair − mid\| medio de 7,11¢ contra 16,55¢. No es concluyente — el contraste bueno es contra los desenlaces, y ya hay 288 grabados |
+
+**Por qué ninguno de los tres bloquea la Fase 0.** El grabador captura los INSUMOS crudos:
+`chainlink`, los dos spots, el strike, `tau_s` y el libro. Cualquier σ o cualquier fuente de
+spot se puede recalcular sobre esa serie a posteriori, así que las columnas de `fair` son
+una comodidad y no el producto. Lo irrepetible —los precios y los desenlaces— se está
+grabando bien.
+
+Dos avisos para quien lea esto en el Sprint 5:
+
+- **No filtres por «sin halt» sin mirar el desglose.** El 35% de `sigma_fuera_de_banda` es
+  el artefacto de calibración de arriba, no ceguera real. Las banderas se graban por motivo
+  justo para poder distinguirlo.
+- **La escala √t es sospechosa.** σ se estima sobre retornos de 1 s y se extrapola a 900 s.
+  Si la vol se agrupa a escala de minutos, esa extrapolación subestima la varianza terminal,
+  y encaja con lo observado. Es la primera hipótesis a comprobar.
