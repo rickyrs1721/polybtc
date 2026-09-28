@@ -580,6 +580,24 @@ reporte de PnL como línea fija, no ignorarse.
 
 ### Fase 0 — Solo observación (2 semanas, $0 en riesgo)
 
+> **CORRIENDO. Inicio 2026-09-25 04:20 UTC · fin 2026-10-09 04:20 UTC.**
+>
+> Máquina: Hetzner CX23 en Helsinki (Finlandia — sin restricción geográfica, §2.3),
+> `62.238.113.213`. Dos servicios `systemd` habilitados y sin reinicios. El VPS corre
+> **`6457a04`** y se queda ahí: los commits posteriores son documentación y el script de
+> respaldo, que se ejecuta en la máquina local.
+>
+> **No se toca NADA hasta el 9 de octubre.** Ni `spot_source`, ni el piso de σ, ni el
+> esquema del Parquet, ni la versión desplegada. Cambiar un parámetro mientras se mide es
+> cómo se obtiene un resultado que no significa nada, y añadir una columna parte el conjunto
+> de datos en dos. Si aparecen huecos, se arregla la reconexión y **se reinicia el contador**.
+>
+> El contador arranca en el soak y no después porque esas 72 h son datos de la misma
+> calidad: cero huecos, cero reinicios, 288/288 desenlaces leídos.
+>
+> Respaldo diario en modo *pull* a `~/polybtc-backups/` en la máquina local. Los datos del
+> VPS son irrepetibles: una época que ya resolvió no se vuelve a observar.
+
 Sin operar. Nada. Conecta TWAP + spot + book y graba todo a Parquet.
 
 Al final, responde con datos:
