@@ -34,8 +34,13 @@ mkdir -p "${TARGET}"
 # --partial: una copia cortada a mitad se reanuda en vez de empezar de cero.
 # Sin --delete a propósito: esto es un archivo histórico, no un espejo. Si algo se borra en
 # el VPS —por error o por un disco lleno— la copia lo conserva.
-rsync -az --partial --human-readable --info=stats1 "$@" \
-  "${REMOTE}:${REMOTE_DIR}" "${TARGET}/"
+#
+# Las opciones se quedan en el mínimo común denominador porque macOS no trae el rsync de
+# samba sino `openrsync`, que se anuncia como «rsync version 2.6.9 compatible» y rechaza
+# todo lo posterior: `--info=stats1` le hace imprimir la ayuda y salir con error. Este
+# script corre en TU máquina (el respaldo va en modo pull), así que el rsync que importa es
+# el viejo.
+rsync -az --partial --stats "$@" "${REMOTE}:${REMOTE_DIR}" "${TARGET}/"
 
 echo
 echo "Destino: ${TARGET}"
