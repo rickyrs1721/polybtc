@@ -433,7 +433,9 @@ polybtc/
 │   │   ├── app.py               # FastAPI + SSE. localhost, sin autenticación
 │   │   ├── history.py           # agregados de los paneles desde los Parquet
 │   │   └── static/index.html    # una sola página, sin CDN
-│   ├── research/                # notebooks de análisis de Fase 0
+│   ├── research/                # análisis de Fase 0
+│   │   ├── mc_check.py          # Monte Carlo que valida terminal_variance
+│   │   └── fase0_report.py      # las 6 preguntas de §6, §8 y el Brier del go/no-go
 │   └── main.py
 ├── scripts/
 │   ├── tail_feeds.py            # una línea/s con precios, basis y edad de cada feed.
@@ -447,6 +449,8 @@ polybtc/
 │   ├── pull_data.sh             # respaldo en modo PULL, se ejecuta desde tu máquina
 │   ├── polybtc-{recorder,dashboard}.service
 │   └── README.md                # runbook por fases
+├── docs/
+│   └── fase0-informe.md         # veredicto de la Fase 0 y su lectura
 ├── data/                        # NO versionado
 │   ├── YYYY/MM/DD/HH.parquet    # una fila por segundo. SIEMPRE completo y legible
 │   ├── YYYY/MM/DD/HH.arrow.part # hora en curso. Es el almacén durable real
@@ -580,23 +584,22 @@ reporte de PnL como línea fija, no ignorarse.
 
 ### Fase 0 — Solo observación (2 semanas, $0 en riesgo)
 
-> **CORRIENDO. Inicio 2026-09-25 04:20 UTC · fin 2026-10-09 04:20 UTC.**
+> **TERMINADA. 25-sep 04:20 → 11-oct 04:00 UTC. Veredicto: PARAR — no hay edge.**
 >
-> Máquina: Hetzner CX23 en Helsinki (Finlandia — sin restricción geográfica, §2.3),
-> `62.238.113.213`. Dos servicios `systemd` habilitados y sin reinicios. El VPS corre
-> **`6457a04`** y se queda ahí: los commits posteriores son documentación y el script de
-> respaldo, que se ejecuta en la máquina local.
+> 1.381.162 filas a 1 Hz, cero huecos, 1.537 épocas con desenlace. El informe completo está
+> en `docs/fase0-informe.md` y los números los reproduce
+> `src/polybtc/research/fase0_report.py`.
 >
-> **No se toca NADA hasta el 9 de octubre.** Ni `spot_source`, ni el piso de σ, ni el
-> esquema del Parquet, ni la versión desplegada. Cambiar un parámetro mientras se mide es
-> cómo se obtiene un resultado que no significa nada, y añadir una columna parte el conjunto
-> de datos en dos. Si aparecen huecos, se arregla la reconexión y **se reinicia el contador**.
+> **El modelo predice los desenlaces peor que el precio de mercado en todos los tramos de
+> τ** (Brier 0,1598 contra 0,1474), y sigue perdiendo un 6,37% con σ recalibrada a su mejor
+> valor posible (×1,5). El `|fair − mid| > 3¢` el 62,6% del tiempo **no era oportunidad,
+> era error propio** — y esa es la lección central: esa métrica no distingue «el mercado se
+> equivoca» de «yo me equivoco», y la tabla de go/no-go de abajo se construyó sobre ella.
 >
-> El contador arranca en el soak y no después porque esas 72 h son datos de la misma
-> calidad: cero huecos, cero reinicios, 288/288 desenlaces leídos.
+> La fila 0 **no** se dispara: el basis corregido deja 1,77¢ de residuo a τ=300 s, por
+> debajo del colchón. El ancla estaba bien; lo que no estaba a la altura era el modelo.
 >
-> Respaldo diario en modo *pull* a `~/polybtc-backups/` en la máquina local. Los datos del
-> VPS son irrepetibles: una época que ya resolvió no se vuelve a observar.
+> No se avanza al Sprint 6. Coste total: ~€6 de VPS, $0 de capital.
 
 Sin operar. Nada. Conecta TWAP + spot + book y graba todo a Parquet.
 
@@ -672,7 +675,13 @@ Marcar cuando se resuelvan. No implementar asumiendo una respuesta.
 - [x] **Tipo de mercado objetivo**: familia `btc-updown-15m` (existe también `-5m`).
       **Up/down desde la apertura de la época**: `K` es el precio al inicio del rango, no
       un strike fijo. Verificado el 2026-09-08 en la descripción del propio mercado.
-- [ ] **Ventana TWAP por mercado**: **sin resolver, y no por descuido.** La descripción
+- [x] **Ventana TWAP por mercado**: **w = 60 segundos.** Resuelto contra 1.534 épocas con
+      desenlace real: el TWAP de 60 s en `T` acierta el **95,96%**, frente al 82,27% de la
+      media del rango de 15 minutos del título. El mercado liquida contra el stream
+      `btc-usd-twap-60s` que la propia página cita, no contra lo que dice su título. La
+      contradicción del producto se resuelve a favor de la fuente citada, por 14 puntos.
+      Detalle en `docs/fase0-informe.md`. Lo que sigue es el enunciado original:
+- [ ] ~~**Ventana TWAP por mercado**~~: **sin resolver, y no por descuido.** La descripción
       dice que resuelve por «el TWAP del **rango de tiempo especificado en el título**»
       —15 minutos— pero cita como fuente el stream **`btc-usd-twap-60s`**. Son dos cosas
       distintas y la documentación de Polymarket no cubre cómo resuelven estos mercados.
@@ -933,3 +942,32 @@ Dos avisos para quien lea esto en el Sprint 5:
 - **La escala √t es sospechosa.** σ se estima sobre retornos de 1 s y se extrapola a 900 s.
   Si la vol se agrupa a escala de minutos, esa extrapolación subestima la varianza terminal,
   y encaja con lo observado. Es la primera hipótesis a comprobar.
+
+### v2.8 — cierre de la Fase 0 (octubre 2026)
+
+Catorce días de grabación continua contestan las seis preguntas de §6, cierran §8 y dan el
+veredicto. El informe está en `docs/fase0-informe.md`.
+
+| § | Cambio | Motivo |
+| --- | --- | --- |
+| 6 | **Veredicto: parar.** No se avanza al Sprint 6 | El modelo predice los desenlaces peor que el mercado en TODOS los tramos de τ (Brier 0,1598 contra 0,1474), y sigue perdiendo un 6,37% con σ en su mejor calibración posible |
+| 8 | **Cerrada: la ventana TWAP es de 60 s** | 95,96% de acierto contra 1.534 desenlaces, frente al 82,27% de la hipótesis de 15 minutos. Liquida contra el stream que cita la página, no contra lo que dice el título |
+| 2.1.c | Confirmado: el basis corregido aguanta | Residuo tras EWMA sin sesgo (media −$0,03) y 1,77¢ a τ=300 s, por debajo del colchón. Exactamente lo que §2.1.c predijo. Y **binance gana a coinbase** sobre esta métrica (6,51 contra 8,21), al revés que sobre la dispersión en crudo |
+| 3.4 | σ estaba subestimada **un 50%** | El barrido de calibración la sitúa en ×1,5. No basta: ni siquiera ahí el modelo bate al mercado |
+| 3.3 | Validada: el TWAP es predecible casi perfectamente | `twap60` ≈ spot retrasado 32 s con correlación 0,99997. La maquinaria de `S_eff` está bien; el problema no estaba ahí |
+
+**La lección que vale más que el veredicto, y que esta sección no tenía:**
+
+`|fair − mid|` **no distingue «el mercado se equivoca» de «yo me equivoco».** Mide las dos
+cosas sumadas. La pregunta 2 de §6 y toda la tabla de go/no-go se construyeron sobre esa
+métrica, y por eso resultaron inaplicables: con un 62,6% por encima de 3¢, la fila 3 decía
+«seguir» cuando la respuesta correcta era «parar».
+
+Lo que sí distingue es contrastar contra los desenlaces reales — Brier del modelo frente al
+del precio de mercado. Esa comparación necesita exactamente lo que la Fase 0 grabó, y es la
+que debería encabezar la tabla de decisión de cualquier fase futura.
+
+Corolario metodológico, aprendido por las malas con la elección de spot: **más datos no
+arreglan una métrica mal elegida.** Tres veredictos distintos salieron de mirar la
+dispersión en crudo con muestras cada vez mayores; en cuanto se midió el residuo tras el
+EWMA, la respuesta fue estable a la primera.
