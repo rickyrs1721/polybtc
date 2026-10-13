@@ -166,6 +166,47 @@ necesita más de 1.75¢ de edge real solo para empatar, antes del spread.
 50 shares, o sea $25 a `p=0.50`, por encima del cap de posición de §5.1 incluso en la
 opción (A). Cuenta con fee cero, no con el rebate (§8.1).
 
+> **Ese párrafo mezcla dos programas distintos, y la conclusión es falsa.** Verificado el
+> 2026-10-13 contra la doc y contra el mercado vivo:
+>
+> | | Liquidity Rewards | Maker Rebates |
+> | --- | --- | --- |
+> | Premia | órdenes **en reposo** cerca del mid | volumen **ejecutado** como maker |
+> | Mínimo de tamaño | `rewards_min_size` = 50 shares | **ninguno** |
+> | Fondeo | pool por mercado (`clob_rewards`) | 20% de las fees de taker del mercado |
+> | En `btc-updown-15m` | **`clob_rewards = None`**: sin pool | activo |
+>
+> `rewards_min_size` es del **primero**, y el rebate del 20% es el **segundo**: se cobra
+> por share ejecutada, sin mínimo, y sí estaba a nuestro alcance —
+> `rebate_por_share = 0.2 · 0.07 · p · (1−p)`, o sea 0.35¢ a `p=0.50`, el 0.70% del
+> nocional por fill. El que tiene el mínimo de 50 shares es el de liquidity rewards, y ese
+> **no tiene asignación** en estos mercados: el programa de $1M para cripto TWAP terminó
+> en agosto y `rewards_min_size`/`rewards_max_spread` quedaron como parámetros huérfanos.
+>
+> No cambia «maker-only» —que se sostiene en el fee de taker, no en el rebate—, pero sí
+> cambiaba la economía de proveer liquidez, que es lo que midió la Fase 0.b. El rebate
+> resultó real y aun así insuficiente: cubre el 15% de la selección adversa medida
+> (§2.2.b). Fuente: `docs.polymarket.com/programs/maker-rebates.md`, y
+> `FeeSchedule(rate=0.07, taker_only=True, rebate_rate=0.2)` del propio mercado.
+
+#### 2.2.b La selección adversa, medida (Fase 0.b, 2026-10-13)
+
+§3.5 dice que como maker «la selección adversa sustituye al fee» y manda modelar ese coste
+explícitamente. Ya está medido, sobre los mismos 1.600.762 segundos de la Fase 0 y con
+`research/adverse_selection.py`. Lo que cuesta que te llenen, por share:
+
+| | Céntimos |
+| --- | --- |
+| Deriva del mid en tu contra a 60 s del fill | **2,265** |
+| Neto del fill (medio spread − deriva) | −1,756 |
+| Maker rebate | +0,265 |
+| **Total por share ejecutada** | **−1,491** |
+
+Control sobre los 1.035.115 segundos **sin** fill: **+0,020¢**. Factor 113 — el coste lo
+crea la ejecución, no una tendencia del mercado. No hay tramo de `τ` que se salve (de
+2,1¢ a 5,5¢) ni régimen de tick que lo arregle. El veredicto y su lectura están en
+`docs/fase0b-informe.md`: **no se provee liquidez en estos mercados**.
+
 Contexto que refuerza la decisión: cripto tiene el feeRate **más alto de todas las
 categorías** (0.07 frente a 0.03–0.05 del resto, y 0 en geopolítica). Ese diseño es
 deliberado — está puesto para desincentivar precisamente a los bots agresivos en mercados
@@ -701,13 +742,24 @@ Marcar cuando se resuelvan. No implementar asumiendo una respuesta.
 - [x] **Tratamiento del empate**: el evento es **`>=`**, y el empate **resuelve "Up"**.
       Literal de la descripción: *«greater than or equal to the price at the beginning of
       that range»*. Verificado el 2026-09-08.
-- [ ] **Tipo de wallet**: Deposit Wallet (sig type 3, requiere envoltura ERC-7739 de la
+Las cuatro que siguen quedan **sin objeto** al cerrarse el proyecto (2026-10-13). No se
+«resolvieron»: dependían de llegar a operar, y las tres vías de edge están medidas y
+descartadas (§2.2.b y la v2.8). Se dejan escritas porque quien reabra esto necesita saber
+qué estaba pendiente, no encontrarse una lista en blanco.
+
+- [—] **Tipo de wallet**: Deposit Wallet (sig type 3, requiere envoltura ERC-7739 de la
       firma) vs Proxy (sig type 1). Determina toda la ruta de firmado. **Resuélvelo antes
-      de escribir `execution/`** — no es refactorizable a mitad.
-- [ ] **VPS en `eu-west-1`** contratado, o corriendo desde casa (limita a estrategias
-      de horizonte más largo).
-- [ ] **Sizing: opción (A) o (B) de §5.1**, tras los datos de Fase 0.
-- [ ] **Umbral de edge definitivo**, tras los datos de Fase 0.
+      de escribir `execution/`** — no es refactorizable a mitad. Sin objeto: `execution/`
+      no se escribió nunca, y es el primer sitio donde habría que empezar.
+- [—] **VPS en `eu-west-1`** contratado, o corriendo desde casa (limita a estrategias
+      de horizonte más largo). Sin objeto: la Fase 0 corrió en Helsinki —grabar no es
+      operar— y la máquina se destruyó el 2026-10-13. Para operar seguiría haciendo falta,
+      con el cuidado de las dos listas de close-only de §2.3.
+- [—] **Sizing: opción (A) o (B) de §5.1**, tras los datos de Fase 0. Sin objeto: los datos
+      dijeron que no se opera, y §5.1 ya avisaba de no elegir antes de tenerlos.
+- [—] **Umbral de edge definitivo**, tras los datos de Fase 0. Sin objeto, y con una
+      lección detrás: el umbral que importaba no era un número de edge sobre `|fair − mid|`
+      sino **la métrica misma** (v2.8).
 
 ### 8.1 Hechos del mercado objetivo, verificados el 2026-09-08
 
@@ -720,8 +772,9 @@ contradicen supuestos que este documento daba por buenos.
 | `minimum_order_size` | 5 shares | Confirma el problema de tamaño de §5.1 |
 | `seconds_delay` | `None` | Sin retardo de matching deliberado (§2.3) |
 | `fee_type` | `crypto_fees_v2` | — |
-| `rewards_min_size` | **50 shares** | **$25 a p=0.50.** El rebate de maker de §2.2 NO es alcanzable con el cap de posición de §5.1, ni siquiera con la opción (A) |
-| `rewards_max_spread` | 4.5 | — |
+| `rewards_min_size` | **50 shares** | **$25 a p=0.50.** ~~El rebate de maker de §2.2 NO es alcanzable~~ — el dato es correcto, la consecuencia no: es el mínimo del programa de **liquidity rewards**, no del rebate. Y ese programa **no tiene pool aquí** (`clob_rewards = None`, verificado el 2026-10-13), así que el mínimo da igual: no hay nada que repartir |
+| `rewards_max_spread` | 4.5 | Del mismo programa sin pool. Parámetro huérfano |
+| `fee_schedule` | `rate=0.07, taker_only=True, rebate_rate=0.2` | El rebate de maker sí existe y no tiene mínimo de tamaño (§2.2) |
 
 > **El tick sigue al PRECIO, no al mercado.** Esta tabla registraba `minimum_tick_size =
 > 0.01` como un hecho de la familia y sacaba de ahí una conclusión sobre §2.3. Medido el
@@ -971,3 +1024,28 @@ Corolario metodológico, aprendido por las malas con la elección de spot: **má
 arreglan una métrica mal elegida.** Tres veredictos distintos salieron de mirar la
 dispersión en crudo con muestras cada vez mayores; en cuanto se midió el residuo tras el
 EWMA, la respuesta fue estable a la primera.
+
+### v2.9 — Fase 0.b: ¿paga proveer liquidez? (octubre 2026)
+
+La Fase 0 cerró el edge de información y el de velocidad. Quedaba el estructural —cobrar
+por hacer de maker— que no exige ganarle la previsión a nadie. Se mide sobre los datos ya
+grabados, sin gastar nada. Informe en `docs/fase0b-informe.md`.
+
+| § | Cambio | Motivo |
+| --- | --- | --- |
+| 2.2 | **Corregido**: el rebate de maker SÍ era alcanzable | §2.2 y §8.1 mezclaban dos programas. `rewards_min_size` = 50 shares es de **liquidity rewards**; el rebate del 20% va por volumen ejecutado y no tiene mínimo. 0.35¢ por share a `p=0.50` |
+| 8.1 | **Corregido**: `rewards_min_size` y `rewards_max_spread` son parámetros huérfanos | `clob_rewards = None` en las cuatro épocas consultadas: el programa de $1M para cripto TWAP terminó en agosto. No hay pool, así que su mínimo es irrelevante |
+| 2.2.b | **Nuevo**: la selección adversa, medida | §3.5 mandaba modelar ese coste «explícitamente» y nunca se había hecho. Son **2,265¢ a 60 s** contra un umbral de 0,5¢ escrito antes de medir, y el control sin fill da +0,020¢: el coste lo crea la ejecución |
+| — | **Veredicto: no se provee liquidez.** No se ejecuta el paso 3 del plan | Por share ejecutada: −1,756¢ de neto + 0,265¢ de rebate = **−1,491¢**. El rebate cubre el 15% del agujero |
+
+**La lección de esta fase**, que es distinta de la de la v2.8 y vale para cualquier medida
+futura: **un test sin control no prueba nada.** 2,265¢ de deriva podrían haber sido el
+mercado moviéndose; medir la misma deriva en el millón de segundos sin fill —y obtener
++0,020¢— es lo que convierte una cifra en una conclusión. Es el mismo recurso que hacía
+creíble a `mc_check.py` incluir la fórmula retirada en su tabla.
+
+Y un corolario sobre el sesgo propio: este estimador solo ve los fills que ocurren
+**porque el precio se movió**, así que está sesgado a favor de parar. En vez de dejarlo
+como advertencia, se convirtió en un número: el equilibrio está en que **menos del 34,3%**
+de tus fills sean de ese tipo. Una limitación que se escribe como umbral comprobable es
+una limitación que la siguiente sesión puede atacar; una que se escribe como párrafo, no.

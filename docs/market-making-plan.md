@@ -1,6 +1,18 @@
 # Fase 0.b — ¿paga la provisión de liquidez?
 
-**Rama:** `research/market-making` · **Estado:** paso 1 y 2 pendientes · **Capital: $0 por ahora**
+**Rama:** `research/market-making` · **Estado: TERMINADO — veredicto PARAR** · **Coste: €0**
+
+> **Pasos 1 y 2 hechos el 2026-10-13. La selección adversa a 60 s es de 2,265¢ contra el
+> umbral de 0,5¢ escrito abajo: 4,5 veces por encima, en todos los tramos de τ y en los dos
+> libros.** El rebate de maker resultó ser real —§2.2 lo daba por inalcanzable confundiendo
+> dos programas— pero cubre solo el 15% del coste. **No se ejecuta el paso 3.** El informe
+> es `docs/fase0b-informe.md` y los números los reproduce
+> `uv run python -m polybtc.research.adverse_selection --data-dir ~/polybtc-backups/<host>`.
+>
+> Lo que reabriría la línea está escrito como umbral, no como párrafo: este estimador solo
+> ve los fills causados por un movimiento de precio, y el equilibrio está en que **menos
+> del 34,3%** de los fills reales sean de ese tipo. Medir esa fracción es lo único que
+> justificaría el paso 3.
 
 ---
 
@@ -122,7 +134,9 @@ Es el escenario difícil del market making, no el fácil. Eso no lo descarta: lo
 - **Datos:** `~/polybtc-backups/62.238.113.213/` — 1.600.762 filas, 1.779 épocas resueltas,
   445 Parquet. Verificado: `uv run python -m polybtc.research.fase0_report --data-dir <ruta>`
   reproduce el informe completo sin tocar el VPS.
-- **VPS:** pendiente de destruir, junto con su Primary IP y la deploy key de GitHub. Ya no
-  hace falta para nada de este plan: los pasos 1 y 2 se hacen sobre la copia local.
-- **Siguiente acción concreta:** el paso 2. Es el único que se puede empezar sin leer nada
-  ni gastar nada, y puede cerrar la línea entera por sí solo.
+- **VPS: destruido el 2026-10-13**, junto con su Primary IP. No queda nada corriendo ni
+  facturando. Los pasos 1 y 2 se hicieron sobre la copia local, que es la que queda como
+  único archivo de la Fase 0. Pendiente solo de confirmar que la **deploy key de GitHub**
+  se borró también (`Settings → Deploy keys`): sin máquina que la use, sobra.
+- ~~**Siguiente acción concreta:** el paso 2.~~ Hecho. Cerró la línea entera por sí solo,
+  que es exactamente lo que esta línea anticipaba que podía pasar.
