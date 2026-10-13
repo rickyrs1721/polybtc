@@ -58,6 +58,44 @@ git clone https://github.com/rickyrs1721/polybtc.git /tmp/polybtc
 sudo bash /tmp/polybtc/deploy/bootstrap.sh
 ```
 
+> **Ejecútalo desde `/tmp`, nunca desde `/opt/polybtc`.** El script hace `git reset --hard`
+> sobre ese directorio y bash lee los archivos por offset de bytes mientras los ejecuta: se
+> saltaría secciones enteras sin dar ningún error. El propio script se relanza desde una
+> copia si detecta el caso, pero no lo pongas a prueba.
+
+### Si el repositorio es privado: deploy key de solo lectura
+
+Con el repositorio **público** —como está ahora— esto no hace falta: el `git clone` por
+HTTPS funciona sin credenciales y el bootstrap arranca tal cual.
+
+Si vuelve a ser privado, la máquina necesita leerlo. Se le da una llave **propia y de solo
+lectura**, nunca tus credenciales: así, si comprometen el servidor, lo máximo que obtienen
+es leer este repositorio. En el VPS:
+
+```bash
+ssh-keygen -t ed25519 -f /root/.ssh/polybtc_deploy -N "" -C "polybtc-vps-deploy"
+cat >> /root/.ssh/config <<'CFG'
+Host github.com
+    IdentityFile /root/.ssh/polybtc_deploy
+    IdentitiesOnly yes
+CFG
+chmod 600 /root/.ssh/config
+ssh-keyscan -t ed25519 github.com >> /root/.ssh/known_hosts
+cat /root/.ssh/polybtc_deploy.pub
+```
+
+Esa clave pública se pega en **GitHub → el repo → Settings → Deploy keys → Add deploy key**,
+con «Allow write access» **sin marcar**. Comprueba y arranca:
+
+```bash
+ssh -T git@github.com     # "Hi <usuario>/polybtc! You've successfully authenticated"
+POLYBTC_REPO=git@github.com:<usuario>/polybtc.git bash /tmp/polybtc/deploy/bootstrap.sh
+```
+
+Va sin passphrase porque tiene que funcionar desatendida; por eso importa que sea de solo
+lectura. Al destruir la máquina, **borra también la deploy key en GitHub**: una llave viva
+apuntando a un servidor que ya no controlas es un cabo suelto.
+
 Idempotente: se puede repetir. Deja usuario de servicio, cortafuegos con solo SSH, SSH sin
 contraseña, `chrony`, `uv`, el repo en `/opt/polybtc`, el entorno con `uv sync --frozen`,
 la configuración en `/etc/polybtc/polybtc.env` y las dos unidades habilitadas —pero **no
