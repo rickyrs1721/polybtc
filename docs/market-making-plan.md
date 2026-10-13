@@ -79,7 +79,7 @@ todavía no ha pagado la selección adversa.
 
 ### Paso 2 — Selección adversa, con los datos que ya hay *(coste: 0)*
 
-**1,6 millones de filas en `~/polybtc-backups/62.238.113.213/` ya contienen la respuesta.**
+**1,6 millones de filas en `~/polybtc-backups/<host>/` ya contienen la respuesta.**
 
 Método, con su limitación por delante: solo grabamos el *top of book*, no operaciones ni
 profundidad. Así que no se mide, se **estima**: una orden en reposo en el bid a precio `p`
@@ -131,7 +131,7 @@ Es el escenario difícil del market making, no el fácil. Eso no lo descarta: lo
 ## Estado para retomar
 
 - **Rama:** `research/market-making`, desde `1adcbdb`.
-- **Datos:** `~/polybtc-backups/62.238.113.213/` — 1.600.762 filas, 1.779 épocas resueltas,
+- **Datos:** `~/polybtc-backups/<host>/` — 1.600.762 filas, 1.779 épocas resueltas,
   445 Parquet. Verificado: `uv run python -m polybtc.research.fase0_report --data-dir <ruta>`
   reproduce el informe completo sin tocar el VPS.
 - **VPS: destruido el 2026-10-13**, junto con su Primary IP. No queda nada corriendo ni
