@@ -3,8 +3,10 @@
 Un bot de market making para mercados binarios de BTC en Polymarket, construido hasta el
 punto exacto en el que los datos dijeron que no siguiera.
 
-**Resultado: no hay edge.** El modelo predice los desenlaces peor que el propio precio de
-mercado, en todos los horizontes y también con su volatilidad óptimamente recalibrada. El
+**Resultado: no hay edge, por ninguna de las tres vías que podían darlo.** El modelo
+predice los desenlaces peor que el propio precio de mercado, en todos los horizontes y
+también con su volatilidad óptimamente recalibrada. Y cuando se midió la vía que no exige
+predecir nada —cobrar por proveer liquidez— resultó costar tres veces lo que paga. El
 proyecto se detuvo antes de arriesgar un dólar.
 
 Eso es lo que este repositorio documenta: no una estrategia rentable, sino **el método que
@@ -33,9 +35,9 @@ ciertas; la cuarta no estaba en el plan.
 | `recorder/` | Una fila por segundo a Parquet. Dos procesos separados del dashboard |
 | `dashboard/` | FastAPI + SSE, solo lectura, paneles atados a las preguntas del análisis |
 | `deploy/` | Preflight, bootstrap idempotente, unidades systemd, respaldo, informe de soak |
-| `research/` | Monte Carlo del modelo e informe final de la fase de medición |
+| `research/` | Monte Carlo del modelo, informe de la fase de medición y la selección adversa de un maker |
 
-~8.900 líneas de Python, 154 tests, `ruff` y `mypy --strict` limpios, 28 commits.
+~9.200 líneas de Python, 160 tests, `ruff` y `mypy --strict` limpios.
 
 ---
 
@@ -115,6 +117,32 @@ El informe completo, con las seis preguntas de la fase de medición, está en
 [`docs/fase0-informe.md`](docs/fase0-informe.md) y lo reproduce
 [`research/fase0_report.py`](src/polybtc/research/fase0_report.py).
 
+### Y tampoco paga proveer liquidez
+
+Perder la apuesta de predicción no cierra la pregunta entera: un maker cobra por estar ahí,
+no por acertar. Esa vía se midió sobre los mismos datos, sin gastar nada más, con el umbral
+escrito antes: *si la selección adversa a 60 s supera medio tick (0,5¢), se para*.
+
+| Por share ejecutada | Céntimos |
+| --- | --- |
+| Deriva del mid en tu contra a 60 s | **2,265** |
+| Neto del fill *(medio spread − deriva)* | −1,756 |
+| Maker rebate del 20% | +0,265 |
+| **Total** | **−1,491** |
+
+**El precio no vuelve**: lo que en el instante del fill son 2,09¢ sigue siendo 2,27¢ un
+minuto después. No es impacto transitorio, es información que se queda en el precio.
+
+Y lo que convierte esa cifra en una conclusión es el control: la misma deriva medida en el
+**millón de segundos en los que no hubo fill** da **+0,020¢**. Factor 113. El coste lo crea
+la ejecución, no una tendencia del mercado — un test que no puede salir negativo no prueba
+nada.
+
+Hasta el sesgo del método se dejó como número comprobable en vez de como advertencia: el
+estimador solo ve los fills causados por un movimiento de precio, así que esto solo sería
+viable si **menos del 34,3%** de los fills reales fueran de ese tipo. Detalle en
+[`docs/fase0b-informe.md`](docs/fase0b-informe.md).
+
 ---
 
 ## Lo que salió mal por el camino
@@ -149,6 +177,7 @@ arriesgar capital**, y que eso es más barato que el "sí" que no era.
 - Infraestructura que corrió 18 días seguidos sin perder un segundo.
 - Separación de procesos tal que un fallo del panel no puede tocar los datos.
 - La disciplina de escribir los umbrales **antes** de mirar los resultados.
+- Mediciones con grupo de control, para distinguir un hallazgo de un artefacto.
 - Y la honestidad de aceptar el resultado cuando la métrica fácil decía lo contrario.
 
 **Coste total: ~€6 de VPS. Capital arriesgado: $0.**
@@ -160,13 +189,15 @@ arriesgar capital**, y que eso es más barato que el "sí" que no era.
 | Archivo | Qué contiene |
 | --- | --- |
 | [`CLAUDE.md`](CLAUDE.md) | La fuente de verdad: modelo, arquitectura, riesgo, y un registro de cambios donde cada corrección cita el número que invalidó a la anterior |
-| [`docs/fase0-informe.md`](docs/fase0-informe.md) | El informe final y el veredicto |
+| [`docs/fase0-informe.md`](docs/fase0-informe.md) | El informe de la fase de medición y su veredicto |
+| [`docs/fase0b-informe.md`](docs/fase0b-informe.md) | La pregunta del maker: qué cuesta que te llenen |
 | [`deploy/README.md`](deploy/README.md) | El runbook de despliegue por fases |
 
 ```bash
 uv sync
 uv run pytest
-uv run python -m polybtc.research.fase0_report --data-dir <copia-de-datos>
+uv run python -m polybtc.research.fase0_report      --data-dir <copia-de-datos>
+uv run python -m polybtc.research.adverse_selection --data-dir <copia-de-datos>
 ```
 
 ---
